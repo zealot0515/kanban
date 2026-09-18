@@ -3,7 +3,12 @@ import { createShortTaskId } from "@runtime-task-id";
 import * as runtimeTaskState from "@runtime-task-state";
 
 import { createInitialBoardData } from "@/data/board-data";
-import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
+import type {
+	RuntimeAgentId,
+	RuntimeClineReasoningEffort,
+	RuntimeTaskClineSettings,
+	TaskOverrides,
+} from "@/runtime/types";
 import { isAllowedCrossColumnCardMove, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
 import {
 	type BoardCard,
@@ -27,6 +32,7 @@ export interface TaskDraft {
 	images?: TaskImage[];
 	agentId?: RuntimeAgentId;
 	clineSettings?: RuntimeTaskClineSettings;
+	taskOverrides?: TaskOverrides;
 	baseRef: string;
 }
 
@@ -159,6 +165,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		baseRef?: unknown;
 		agentId?: unknown;
 		clineSettings?: unknown;
+		taskOverrides?: TaskOverrides;
 		clineProviderId?: unknown;
 		clineModelId?: unknown;
 		clineReasoningEffort?: unknown;
@@ -189,6 +196,9 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 	return {
 		id: typeof card.id === "string" && card.id ? card.id : createShortTaskId(createBrowserUuid),
 		title,
+		taskOverrides: runtimeTaskState.getTaskOverridesError(card.taskOverrides)
+			? undefined
+			: runtimeTaskState.cloneTaskOverrides(card.taskOverrides),
 		prompt,
 		startInPlanMode: typeof card.startInPlanMode === "boolean" ? card.startInPlanMode : false,
 		autoReviewEnabled: typeof card.autoReviewEnabled === "boolean" ? card.autoReviewEnabled : false,
@@ -346,6 +356,7 @@ export function addTaskToColumnWithResult(
 			images: draft.images,
 			agentId: draft.agentId,
 			clineSettings: draft.clineSettings,
+			taskOverrides: runtimeTaskState.cloneTaskOverrides(draft.taskOverrides),
 			baseRef: draft.baseRef,
 		},
 		createBrowserUuid,
@@ -544,6 +555,7 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): 
 							: undefined,
 				agentId: draft.agentId,
 				clineSettings: draft.clineSettings,
+				taskOverrides: runtimeTaskState.cloneTaskOverrides(draft.taskOverrides ?? card.taskOverrides),
 				baseRef,
 				updatedAt: Date.now(),
 			};

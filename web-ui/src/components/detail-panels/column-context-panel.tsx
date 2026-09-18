@@ -2,11 +2,10 @@ import { type BeforeCapture, DragDropContext, Droppable, type DropResult } from 
 import { ChevronDown, ChevronRight, Play, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import { BoardCard } from "@/components/board-card";
 import { Button } from "@/components/ui/button";
 import { ColumnIndicator } from "@/components/ui/column-indicator";
-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
+import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
 import { findCardColumnId, isCardDropDisabled } from "@/state/drag-rules";
 import type { BoardCard as BoardCardModel, BoardColumn, BoardColumnId, CardSelection } from "@/types";
 
@@ -24,6 +23,7 @@ function ColumnSection({
 	inlineTaskEditor,
 	onEditTask,
 	onSaveTitle,
+	onSaveLabels,
 	onCommitTask,
 	onOpenPrTask,
 	onMoveToTrashTask,
@@ -33,6 +33,7 @@ function ColumnSection({
 	moveToTrashLoadingById,
 	activeDragSourceColumnId,
 	workspacePath,
+	defaultAgentId,
 	defaultClineModelId,
 }: {
 	column: BoardColumn;
@@ -48,6 +49,7 @@ function ColumnSection({
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
 	onSaveTitle?: (taskId: string, title: string) => void;
+	onSaveLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onMoveToTrashTask?: (taskId: string) => void;
@@ -57,6 +59,7 @@ function ColumnSection({
 	moveToTrashLoadingById?: Record<string, boolean>;
 	activeDragSourceColumnId?: BoardColumnId | null;
 	workspacePath?: string | null;
+	defaultAgentId?: RuntimeAgentId | null;
 	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [open, setOpen] = useState(defaultOpen);
@@ -199,8 +202,10 @@ function ColumnSection({
 												isOpenPrLoading={openPrTaskLoadingById?.[card.id] ?? false}
 												isMoveToTrashLoading={moveToTrashLoadingById?.[card.id] ?? false}
 												workspacePath={workspacePath}
+												defaultAgentId={defaultAgentId}
 												defaultClineModelId={defaultClineModelId}
 												onSaveTitle={onSaveTitle}
+												onSaveLabels={onSaveLabels}
 												onClick={() => {
 													if (column.id === "backlog") {
 														onEditTask?.(card);
@@ -230,6 +235,7 @@ function ColumnSection({
 export function ColumnContextPanel({
 	selection,
 	workspacePath,
+	defaultAgentId,
 	defaultClineModelId,
 	onCardSelect,
 	taskSessions,
@@ -242,6 +248,7 @@ export function ColumnContextPanel({
 	inlineTaskEditor,
 	onEditTask,
 	onSaveTaskTitle,
+	onSaveTaskLabels,
 	onCommitTask,
 	onOpenPrTask,
 	onMoveToTrashTask,
@@ -264,6 +271,7 @@ export function ColumnContextPanel({
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
 	onSaveTaskTitle?: (taskId: string, title: string) => void;
+	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onMoveToTrashTask?: (taskId: string) => void;
@@ -272,6 +280,7 @@ export function ColumnContextPanel({
 	openPrTaskLoadingById?: Record<string, boolean>;
 	moveToTrashLoadingById?: Record<string, boolean>;
 	panelWidth?: string;
+	defaultAgentId?: RuntimeAgentId | null;
 	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [activeDragSourceColumnId, setActiveDragSourceColumnId] = useState<BoardColumnId | null>(null);
@@ -352,7 +361,8 @@ export function ColumnContextPanel({
 							editingTaskId={column.id === "backlog" ? editingTaskId : null}
 							inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 							onEditTask={column.id === "backlog" ? onEditTask : undefined}
-							onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
+							onSaveTitle={onSaveTaskTitle}
+							onSaveLabels={onSaveTaskLabels}
 							onCommitTask={column.id === "review" ? onCommitTask : undefined}
 							onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
 							onMoveToTrashTask={column.id === "review" ? onMoveToTrashTask : undefined}
@@ -362,6 +372,7 @@ export function ColumnContextPanel({
 							moveToTrashLoadingById={column.id === "review" ? moveToTrashLoadingById : undefined}
 							activeDragSourceColumnId={activeDragSourceColumnId}
 							workspacePath={workspacePath}
+							defaultAgentId={defaultAgentId}
 							defaultClineModelId={defaultClineModelId}
 						/>
 					))}

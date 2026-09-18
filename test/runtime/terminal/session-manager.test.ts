@@ -51,6 +51,19 @@ describe("TerminalSessionManager", () => {
 		expect(commandLine).toContain("hello world");
 	});
 
+	it("keeps the reported model across subsequent activity and persistence", () => {
+		const manager = new TerminalSessionManager();
+		manager.hydrateFromRecord({ "task-1": createSummary({ modelId: "launch-model" }) });
+		manager.applyHookActivity("task-1", { modelId: "reported-model" });
+		manager.applyHookActivity("task-1", { activityText: "Using Read" });
+		expect(manager.getSummary("task-1")?.modelId).toBe("reported-model");
+		const restored = new TerminalSessionManager();
+		const saved = manager.getSummary("task-1");
+		if (!saved) throw new Error("Missing summary");
+		restored.hydrateFromRecord({ "task-1": saved });
+		expect(restored.getSummary("task-1")?.modelId).toBe("reported-model");
+	});
+
 	it("stores hook activity metadata on sessions", () => {
 		const manager = new TerminalSessionManager();
 		manager.hydrateFromRecord({

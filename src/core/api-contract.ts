@@ -1,5 +1,8 @@
 import { z } from "zod";
+import { taskOverridesSchema } from "./task-overrides";
 import { resolveTaskTitle } from "./task-title.js";
+
+export type { TaskOverrides } from "./task-overrides";
 
 export const runtimeWorkspaceFileStatusSchema = z.enum([
 	"modified",
@@ -140,6 +143,7 @@ export const runtimeBoardCardSchema = z
 		images: z.array(runtimeTaskImageSchema).optional(),
 		agentId: runtimeAgentIdSchema.optional(),
 		clineSettings: runtimeTaskClineSettingsSchema.optional(),
+		taskOverrides: taskOverridesSchema.optional(),
 		clineProviderId: z.string().optional(),
 		clineModelId: z.string().optional(),
 		clineReasoningEffort: runtimeLegacyTaskClineReasoningEffortSchema.optional(),
@@ -261,6 +265,7 @@ export const runtimeTaskSessionReviewReasonSchema = z
 export type RuntimeTaskSessionReviewReason = z.infer<typeof runtimeTaskSessionReviewReasonSchema>;
 
 export const runtimeTaskHookActivitySchema = z.object({
+	modelId: z.string().nullable().optional(),
 	activityText: z.string().nullable().default(null),
 	toolName: z.string().nullable().default(null),
 	toolInputSummary: z.string().nullable().default(null),
@@ -280,6 +285,7 @@ export const runtimeTaskTurnCheckpointSchema = z.object({
 export type RuntimeTaskTurnCheckpoint = z.infer<typeof runtimeTaskTurnCheckpointSchema>;
 
 export const runtimeTaskSessionSummarySchema = z.object({
+	modelId: z.string().nullable().optional(),
 	taskId: z.string(),
 	state: runtimeTaskSessionStateSchema,
 	mode: runtimeTaskSessionModeSchema.nullable().optional(),
@@ -983,6 +989,7 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
 	rows: z.number().int().positive().optional(),
 	agentId: runtimeAgentIdSchema.optional(),
 	clineSettings: runtimeTaskClineSettingsSchema.optional(),
+	taskOverrides: taskOverridesSchema.optional(),
 });
 export type RuntimeTaskSessionStartRequest = z.infer<typeof runtimeTaskSessionStartRequestSchema>;
 

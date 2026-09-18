@@ -10,11 +10,10 @@ import {
 } from "@hello-pangea/dnd";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import { BoardColumn } from "@/components/board-column";
 import { DependencyOverlay } from "@/components/dependencies/dependency-overlay";
 import { useDependencyLinking } from "@/components/dependencies/use-dependency-linking";
-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
+import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
 import { canCreateTaskDependency } from "@/state/board-state";
 import { findCardColumnId, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
 import type { BoardCard, BoardColumnId, BoardData, BoardDependency } from "@/types";
@@ -39,6 +38,7 @@ export function KanbanBoard({
 	inlineTaskEditor,
 	onEditTask,
 	onSaveTaskTitle,
+	onSaveTaskLabels,
 	onCommitTask,
 	onOpenPrTask,
 	onCancelAutomaticTaskAction,
@@ -53,6 +53,7 @@ export function KanbanBoard({
 	onDragEnd,
 	onRequestProgrammaticCardMoveReady,
 	workspacePath,
+	defaultAgentId,
 	defaultClineModelId,
 }: {
 	data: BoardData;
@@ -66,6 +67,7 @@ export function KanbanBoard({
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCard) => void;
 	onSaveTaskTitle?: (taskId: string, title: string) => void;
+	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onCancelAutomaticTaskAction?: (taskId: string) => void;
@@ -80,6 +82,7 @@ export function KanbanBoard({
 	onDragEnd: (result: DropResult) => void;
 	onRequestProgrammaticCardMoveReady?: (requestMove: RequestProgrammaticCardMove | null) => void;
 	workspacePath?: string | null;
+	defaultAgentId?: RuntimeAgentId | null;
 	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const dragOccurredRef = useRef(false);
@@ -392,7 +395,8 @@ export function KanbanBoard({
 						editingTaskId={column.id === "backlog" ? editingTaskId : null}
 						inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 						onEditTask={column.id === "backlog" ? onEditTask : undefined}
-						onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
+						onSaveTitle={onSaveTaskTitle}
+						onSaveLabels={onSaveTaskLabels}
 						onCommitTask={column.id === "review" ? onCommitTask : undefined}
 						onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
 						onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
@@ -410,6 +414,7 @@ export function KanbanBoard({
 						dependencyTargetTaskId={dependencyLinking.draft?.targetTaskId ?? null}
 						isDependencyLinking={dependencyLinking.draft !== null}
 						workspacePath={workspacePath}
+						defaultAgentId={defaultAgentId}
 						defaultClineModelId={defaultClineModelId}
 						onCardClick={(card) => {
 							if (!dragOccurredRef.current) {

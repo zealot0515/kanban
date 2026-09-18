@@ -370,6 +370,7 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService 
 					toolMessageIdByToolCallId: new Map<string, string>(),
 					toolInputByToolCallId: new Map<string, unknown>(),
 				} satisfies ClineTaskSessionEntry);
+		entry.summary.modelId = modelId;
 		this.messageRepository.setTaskEntry(request.taskId, entry);
 		this.pendingTurnCancelTaskIds.delete(request.taskId);
 

@@ -1,0 +1,2056 @@
+diff --git a/src/cline-sdk/cline-task-session-service.ts b/src/cline-sdk/cline-task-session-service.ts
+index e91336c2e19a650459f17d95ccf0f070c880ac88..5b7d4877855c521344850399e6d3e04dae6b37b9 100644
+--- a/src/cline-sdk/cline-task-session-service.ts
++++ b/src/cline-sdk/cline-task-session-service.ts
+@@ -370,6 +370,7 @@ export class InMemoryClineTaskSessionService implements ClineTaskSessionService
+ 					toolMessageIdByToolCallId: new Map<string, string>(),
+ 					toolInputByToolCallId: new Map<string, unknown>(),
+ 				} satisfies ClineTaskSessionEntry);
++		entry.summary.modelId = modelId;
+ 		this.messageRepository.setTaskEntry(request.taskId, entry);
+ 		this.pendingTurnCancelTaskIds.delete(request.taskId);
+ 
+diff --git a/src/commands/hook-events/codex-hook-events.ts b/src/commands/hook-events/codex-hook-events.ts
+index f0d059b558330440cfb2cfb65a68cee94217e39d..cab612176c7820031e187dea21505190f567bec6 100644
+--- a/src/commands/hook-events/codex-hook-events.ts
++++ b/src/commands/hook-events/codex-hook-events.ts
+@@ -266,7 +266,7 @@ function extractRolloutCommandFromPayload(payload: Record<string, unknown>): str
+ 
+ export async function resolveCodexRolloutFinalMessageForCwd(
+ 	cwd: string,
+-	sessionsRoot = join(homedir(), ".codex", "sessions"),
++	sessionsRoot = join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions"),
+ ): Promise<string | null> {
+ 	if (!cwd.trim()) {
+ 		return null;
+@@ -348,6 +348,11 @@ async function findCodexRolloutFileForCwd(
+ 		} catch {
+ 			continue;
+ 		}
++		const metadata = prefix
++			.split(/\r?\n/)
++			.map(parseJsonObject)
++			.find((line) => line?.type === "session_meta");
++		if (isCodexDescendantSession(metadata)) continue;
+ 		if (prefix.includes(`"cwd":${encodedCwd}`)) {
+ 			return filePath;
+ 		}
+@@ -365,6 +370,15 @@ function mapCodexRolloutActivityLine(line: string): { mapped: CodexMappedHookEve
+ 	if (!lineType) {
+ 		return null;
+ 	}
++	if (lineType === "turn_context") {
++		const payload = asRecord(parsedLine.payload);
++		const modelId = payload ? readStringField(payload, "model") : null;
++		if (modelId)
++			return {
++				fingerprint: `rollout:model:${modelId}`,
++				mapped: { event: "activity", metadata: { modelId, source: "codex" } },
++			};
++	}
+ 	if (lineType === "event_msg") {
+ 		const payload = asRecord(parsedLine.payload);
+ 		if (!payload) {
+@@ -846,7 +860,8 @@ export async function startCodexSessionWatcher(
+ ): Promise<() => Promise<void>> {
+ 	const state = createCodexWatcherState();
+ 	const watcherCwd = options.cwd?.trim() ?? "";
+-	const sessionsRoot = options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
++	const sessionsRoot =
++		options.sessionsRoot ?? join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions");
+ 	const rolloutPollIntervalMs = options.rolloutPollIntervalMs ?? CODEX_ROLLOUT_POLL_INTERVAL_MS;
+ 	const watcherStartedAtMs = Date.now();
+ 	let rolloutLogPath = "";
+diff --git a/src/commands/hooks.ts b/src/commands/hooks.ts
+index e5cf44448e70b37d93e3bffffbaf456545ef2c44..738863946b895f1f249b114f815cf78175e8b01c 100644
+--- a/src/commands/hooks.ts
++++ b/src/commands/hooks.ts
+@@ -9,6 +9,7 @@ import { buildKanbanRuntimeUrl, getRuntimeFetch } from "../core/runtime-endpoint
+ import { buildWindowsCmdArgsArray, resolveWindowsComSpec, shouldUseWindowsCmdLaunch } from "../core/windows-cmd-launch";
+ import { parseHookRuntimeContextFromEnv } from "../terminal/hook-runtime-context";
+ import type { RuntimeAppRouter } from "../trpc/app-router";
++import { enrichClaudeModelMetadata } from "./hook-events/claude-model";
+ import {
+ 	type CodexMappedHookEvent,
+ 	resolveCodexRolloutFinalMessageForCwd,
+@@ -337,6 +338,9 @@ function normalizeHookMetadata(
+ 
+ 	const activityText = inferActivityText(event, payload, toolName, finalMessage, notificationType);
+ 	const merged: Partial<RuntimeTaskHookActivity> = {
++		modelId:
++			flagMetadata.modelId ??
++			(payload ? (readStringField(payload, "modelId") ?? readStringField(payload, "model")) : null),
+ 		source: flagMetadata.source ?? inferredSource ?? null,
+ 		hookEventName: flagMetadata.hookEventName ?? hookEventName ?? null,
+ 		toolName: flagMetadata.toolName ?? toolName ?? null,
+@@ -421,6 +425,9 @@ function appendMetadataFlags(args: string[], metadata?: Partial<RuntimeTaskHookA
+ 	if (!metadata) {
+ 		return args;
+ 	}
++	if (metadata.modelId) {
++		args.push("--metadata-base64", Buffer.from(JSON.stringify(metadata)).toString("base64"));
++	}
+ 	if (metadata.source) {
+ 		args.push("--source", metadata.source);
+ 	}
+@@ -499,7 +506,7 @@ async function runHooksNotify(
+ 		const stdinPayload = await readStdinText();
+ 		const parsedArgs = parseHooksIngestArgs(event, options, payloadArg, stdinPayload);
+ 		const codexEnrichedArgs = await enrichCodexReviewMetadata(parsedArgs, process.cwd());
+-		const args = await enrichDroidReviewMetadata(codexEnrichedArgs);
++		const args = await enrichClaudeModelMetadata(await enrichDroidReviewMetadata(codexEnrichedArgs));
+ 		await ingestHookEvent(args);
+ 	} catch {
+ 		// Best effort only.
+diff --git a/src/commands/task.ts b/src/commands/task.ts
+index db2bc653b02dd8a139f80847d103fcbdb6ca84e8..10b1191caa5bcbb13936a0c0f07088975cfbd75c 100644
+--- a/src/commands/task.ts
++++ b/src/commands/task.ts
+@@ -712,6 +712,7 @@ async function startTask(input: { cwd: string; taskId: string; projectPath?: str
+ 			baseRef: task.baseRef,
+ 			agentId: task.agentId,
+ 			clineSettings: task.clineSettings,
++			taskOverrides: task.taskOverrides,
+ 		});
+ 		if (!started.ok || !started.summary) {
+ 			throw new Error(started.error ?? "Could not start task session.");
+diff --git a/src/core/api-contract.ts b/src/core/api-contract.ts
+index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..2a6867bcae5d761204828a243aca8620e8a9a642 100644
+--- a/src/core/api-contract.ts
++++ b/src/core/api-contract.ts
+@@ -1,6 +1,9 @@
+ import { z } from "zod";
++import { taskOverridesSchema } from "./task-overrides";
+ import { resolveTaskTitle } from "./task-title.js";
+ 
++export type { TaskOverrides } from "./task-overrides";
++
+ export const runtimeWorkspaceFileStatusSchema = z.enum([
+ 	"modified",
+ 	"added",
+@@ -140,6 +143,7 @@ export const runtimeBoardCardSchema = z
+ 		images: z.array(runtimeTaskImageSchema).optional(),
+ 		agentId: runtimeAgentIdSchema.optional(),
+ 		clineSettings: runtimeTaskClineSettingsSchema.optional(),
++		taskOverrides: taskOverridesSchema.optional(),
+ 		clineProviderId: z.string().optional(),
+ 		clineModelId: z.string().optional(),
+ 		clineReasoningEffort: runtimeLegacyTaskClineReasoningEffortSchema.optional(),
+@@ -261,6 +265,7 @@ export const runtimeTaskSessionReviewReasonSchema = z
+ export type RuntimeTaskSessionReviewReason = z.infer<typeof runtimeTaskSessionReviewReasonSchema>;
+ 
+ export const runtimeTaskHookActivitySchema = z.object({
++	modelId: z.string().nullable().optional(),
+ 	activityText: z.string().nullable().default(null),
+ 	toolName: z.string().nullable().default(null),
+ 	toolInputSummary: z.string().nullable().default(null),
+@@ -280,6 +285,7 @@ export const runtimeTaskTurnCheckpointSchema = z.object({
+ export type RuntimeTaskTurnCheckpoint = z.infer<typeof runtimeTaskTurnCheckpointSchema>;
+ 
+ export const runtimeTaskSessionSummarySchema = z.object({
++	modelId: z.string().nullable().optional(),
+ 	taskId: z.string(),
+ 	state: runtimeTaskSessionStateSchema,
+ 	mode: runtimeTaskSessionModeSchema.nullable().optional(),
+@@ -983,6 +989,7 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
+ 	rows: z.number().int().positive().optional(),
+ 	agentId: runtimeAgentIdSchema.optional(),
+ 	clineSettings: runtimeTaskClineSettingsSchema.optional(),
++	taskOverrides: taskOverridesSchema.optional(),
+ });
+ export type RuntimeTaskSessionStartRequest = z.infer<typeof runtimeTaskSessionStartRequestSchema>;
+ 
+diff --git a/src/core/task-board-mutations.ts b/src/core/task-board-mutations.ts
+index 8ae5e93711507106a311f0ea62dffa0523d555b1..e690d16a3d24e8d03beb6aa3086872b9d3be3ef0 100644
+--- a/src/core/task-board-mutations.ts
++++ b/src/core/task-board-mutations.ts
+@@ -9,8 +9,11 @@ import type {
+ 	RuntimeTaskImage,
+ } from "./api-contract";
+ import { createUniqueTaskId } from "./task-id";
++import { cloneTaskOverrides, type TaskOverrides } from "./task-overrides";
+ import { resolveTaskTitle } from "./task-title";
+ 
++export { cloneTaskOverrides, getTaskOverridesError } from "./task-overrides";
++
+ export interface RuntimeCreateTaskInput {
+ 	taskId?: string;
+ 	title?: string;
+@@ -21,6 +24,7 @@ export interface RuntimeCreateTaskInput {
+ 	images?: RuntimeTaskImage[];
+ 	agentId?: RuntimeAgentId;
+ 	clineSettings?: RuntimeTaskClineSettings;
++	taskOverrides?: TaskOverrides;
+ 	baseRef: string;
+ }
+ 
+@@ -33,6 +37,7 @@ export interface RuntimeUpdateTaskInput {
+ 	images?: RuntimeTaskImage[];
+ 	agentId?: RuntimeAgentId | null;
+ 	clineSettings?: RuntimeTaskClineSettings | null;
++	taskOverrides?: TaskOverrides;
+ 	baseRef: string;
+ }
+ 
+@@ -307,6 +312,7 @@ export function addTaskToColumn(
+ 		autoReviewEnabled: Boolean(input.autoReviewEnabled),
+ 		autoReviewMode: normalizeTaskAutoReviewMode(input.autoReviewMode),
+ 		images: cloneTaskImages(input.images),
++		taskOverrides: cloneTaskOverrides(input.taskOverrides),
+ 		...(input.agentId ? { agentId: input.agentId } : {}),
+ 		...(input.clineSettings !== undefined ? { clineSettings: cloneTaskClineSettings(input.clineSettings) } : {}),
+ 		baseRef,
+@@ -623,6 +629,7 @@ export function updateTask(
+ 				autoReviewEnabled: Boolean(input.autoReviewEnabled),
+ 				autoReviewMode: normalizeTaskAutoReviewMode(input.autoReviewMode),
+ 				images: input.images === undefined ? card.images : cloneTaskImages(input.images),
++				taskOverrides: cloneTaskOverrides(input.taskOverrides ?? card.taskOverrides),
+ 				agentId: input.agentId === undefined ? card.agentId : (input.agentId ?? undefined),
+ 				clineSettings:
+ 					input.clineSettings === undefined
+diff --git a/src/terminal/session-manager.ts b/src/terminal/session-manager.ts
+index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaad626a13f 100644
+--- a/src/terminal/session-manager.ts
++++ b/src/terminal/session-manager.ts
+@@ -76,6 +76,7 @@ interface SessionEntry {
+ }
+ 
+ export interface StartTaskSessionRequest {
++	modelId?: string | null;
+ 	taskId: string;
+ 	agentId: AgentAdapterLaunchInput["agentId"];
+ 	binary: string;
+@@ -489,6 +490,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 			const summary = updateSummary(entry, {
+ 				state: "failed",
+ 				agentId: request.agentId,
++				modelId: request.modelId ?? null,
+ 				workspacePath: request.cwd,
+ 				pid: null,
+ 				startedAt: null,
+@@ -533,6 +535,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 		updateSummary(entry, {
+ 			state: request.resumeFromTrash ? "awaiting_review" : "running",
+ 			agentId: request.agentId,
++			modelId: request.modelId ?? null,
+ 			workspacePath: request.cwd,
+ 			pid: session.pid,
+ 			startedAt,
+@@ -817,6 +820,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 		}
+ 
+ 		const hasActivityUpdate =
++			typeof activity.modelId === "string" ||
+ 			typeof activity.activityText === "string" ||
+ 			typeof activity.toolName === "string" ||
+ 			typeof activity.toolInputSummary === "string" ||
+@@ -830,6 +834,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 
+ 		const previous = entry.summary.latestHookActivity;
+ 		const next: RuntimeTaskHookActivity = {
++			modelId: activity.modelId ?? previous?.modelId ?? null,
+ 			activityText:
+ 				typeof activity.activityText === "string" ? activity.activityText : (previous?.activityText ?? null),
+ 			toolName: typeof activity.toolName === "string" ? activity.toolName : (previous?.toolName ?? null),
+@@ -849,6 +854,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 		};
+ 
+ 		const didChange =
++			next.modelId !== (previous?.modelId ?? null) ||
+ 			next.activityText !== (previous?.activityText ?? null) ||
+ 			next.toolName !== (previous?.toolName ?? null) ||
+ 			next.toolInputSummary !== (previous?.toolInputSummary ?? null) ||
+@@ -863,6 +869,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 		const summary = updateSummary(entry, {
+ 			lastHookAt: now(),
+ 			latestHookActivity: next,
++			modelId: activity.modelId?.trim() || entry.summary.modelId,
+ 		});
+ 		if (entry.active) {
+ 			for (const listener of entry.listeners.values()) {
+diff --git a/src/trpc/runtime-api.ts b/src/trpc/runtime-api.ts
+index a494c86b97617d4c1f0f6c19b46de1c229262c1e..2a19f11320af0a5ffc10e629ad2e8684f6299d43 100644
+--- a/src/trpc/runtime-api.ts
++++ b/src/trpc/runtime-api.ts
+@@ -46,6 +46,7 @@ import { resolveTaskTitle } from "../core/task-title.js";
+ import { openInBrowser } from "../server/browser";
+ import { buildRuntimeConfigResponse, resolveAgentCommand } from "../terminal/agent-registry";
+ import type { TerminalSessionManager } from "../terminal/session-manager";
++import { resolveTaskLaunchOverrides } from "../terminal/task-launch-overrides";
+ import { resolveTaskCwd } from "../workspace/task-worktree";
+ import { captureTaskTurnCheckpoint } from "../workspace/turn-checkpoints";
+ import type { RuntimeTrpcContext, RuntimeTrpcWorkspaceScope } from "./app-router";
+@@ -278,11 +279,12 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+ 						error: "No runnable agent command is configured. Open Settings, install a supported CLI, and select it.",
+ 					};
+ 				}
++				const launchOverrides = resolveTaskLaunchOverrides(resolved.agentId, resolved.args, body.taskOverrides);
+ 				const summary = await terminalManager.startTaskSession({
+ 					taskId: body.taskId,
+ 					agentId: resolved.agentId,
+ 					binary: resolved.binary,
+-					args: resolved.args,
++					...launchOverrides,
+ 					autonomousModeEnabled: scopedRuntimeConfig.agentAutonomousModeEnabled,
+ 					cwd: taskCwd,
+ 					prompt: body.prompt,
+diff --git a/test/runtime/hooks-codex-watcher.test.ts b/test/runtime/hooks-codex-watcher.test.ts
+index 8def0aa2d1d53dfb602ae1aa7f969ae9c7628f8b..a69cc0129629bb80a6df0e2ae4a6eacce6634b2f 100644
+--- a/test/runtime/hooks-codex-watcher.test.ts
++++ b/test/runtime/hooks-codex-watcher.test.ts
+@@ -114,6 +114,51 @@ describe("startCodexSessionWatcher", () => {
+ 		]);
+ 	});
+ 
++	it("reports model changes from the active rollout", async () => {
++		const tempDir = await mkdtemp(join(tmpdir(), "kanban-model-watcher-"));
++		const sessionsRoot = join(tempDir, "sessions");
++		const events: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
++		const stop = await startCodexSessionWatcher(
++			join(tempDir, "session.jsonl"),
++			(event) => events.push(event),
++			60000,
++			{ cwd: "/tmp/model-task", sessionsRoot, rolloutPollIntervalMs: 0 },
++		);
++		try {
++			await mkdir(sessionsRoot, { recursive: true });
++			await writeFile(
++				join(sessionsRoot, "rollout-model.jsonl"),
++				[
++					{ type: "session_meta", payload: { cwd: "/tmp/model-task" } },
++					{ type: "turn_context", payload: { model: "first-model" } },
++					{ type: "turn_context", payload: { model: "second-model" } },
++				]
++					.map((line) => `${JSON.stringify(line)}\n`)
++					.join(""),
++			);
++			await writeFile(
++				join(sessionsRoot, "rollout-zz-subagent.jsonl"),
++				[
++					{
++						type: "session_meta",
++						payload: {
++							cwd: "/tmp/model-task",
++							source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } },
++						},
++					},
++					{ type: "turn_context", payload: { model: "child-model" } },
++				]
++					.map((line) => `${JSON.stringify(line)}\n`)
++					.join(""),
++			);
++			await stop();
++			expect(events.map((event) => event.metadata?.modelId)).toEqual(["first-model", "second-model"]);
++		} finally {
++			await stop();
++			await rm(tempDir, { recursive: true, force: true });
++		}
++	});
++
+ 	it("emits in-progress activity from rollout events when tui logs are low-signal", async () => {
+ 		const tempDir = await mkdtemp(join(tmpdir(), "kanban-codex-watcher-"));
+ 		const logPath = join(tempDir, "session.jsonl");
+diff --git a/test/runtime/terminal/session-manager-auto-restart.test.ts b/test/runtime/terminal/session-manager-auto-restart.test.ts
+index 61282b19a7307408083dc914ff8ec9a45df7c2d7..445c5b6152aeccdc1dadd09376a8acf2659f04fe 100644
+--- a/test/runtime/terminal/session-manager-auto-restart.test.ts
++++ b/test/runtime/terminal/session-manager-auto-restart.test.ts
+@@ -49,6 +49,40 @@ describe("TerminalSessionManager auto-restart", () => {
+ 		}));
+ 	});
+ 
++	it("isolates per-task environments at the PTY boundary and retains them on auto-restart", async () => {
++		const spawned: Array<ReturnType<typeof createMockPtySession>> = [];
++		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {
++			const session = createMockPtySession(111 + spawned.length, request);
++			spawned.push(session);
++			return session;
++		});
++		const manager = new TerminalSessionManager();
++		manager.attach("task-1", { onOutput: vi.fn() });
++		const request = {
++			taskId: "task-1",
++			agentId: "codex" as const,
++			binary: "codex",
++			args: ["--model", "custom"],
++			modelId: "custom",
++			cwd: "/tmp/task-1",
++			prompt: "Build",
++			env: { TASK_OVERRIDE_TEST_VALUE: "literal $value" },
++		};
++		await manager.startTaskSession(request);
++		expect(ptySessionSpawnMock).toHaveBeenLastCalledWith(
++			expect.objectContaining({ env: expect.objectContaining({ TASK_OVERRIDE_TEST_VALUE: "literal $value" }) }),
++		);
++		request.env.TASK_OVERRIDE_TEST_VALUE = "caller mutation";
++		await manager.startTaskSession({ ...request, taskId: "task-2", env: undefined });
++		expect(ptySessionSpawnMock.mock.calls[1]?.[0].env.TASK_OVERRIDE_TEST_VALUE).toBeUndefined();
++		spawned[0]?.triggerExit(130);
++		await vi.waitFor(() => expect(ptySessionSpawnMock).toHaveBeenCalledTimes(3));
++		expect(ptySessionSpawnMock.mock.calls[2]?.[0].env.TASK_OVERRIDE_TEST_VALUE).toBe("literal $value");
++		expect(manager.getSummary("task-1")?.modelId).toBe("custom");
++		manager.stopTaskSession("task-1");
++		manager.stopTaskSession("task-2");
++	});
++
+ 	it("restarts an attached agent session after it exits", async () => {
+ 		const spawnedSessions: Array<ReturnType<typeof createMockPtySession>> = [];
+ 		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {
+diff --git a/test/runtime/terminal/session-manager.test.ts b/test/runtime/terminal/session-manager.test.ts
+index 3220ea46ce7fceff83bf067de35b12adf06583ae..5db815d3549a3e7f5f0167b9815cba3410e84d0d 100644
+--- a/test/runtime/terminal/session-manager.test.ts
++++ b/test/runtime/terminal/session-manager.test.ts
+@@ -51,6 +51,19 @@ describe("TerminalSessionManager", () => {
+ 		expect(commandLine).toContain("hello world");
+ 	});
+ 
++	it("keeps the reported model across subsequent activity and persistence", () => {
++		const manager = new TerminalSessionManager();
++		manager.hydrateFromRecord({ "task-1": createSummary({ modelId: "launch-model" }) });
++		manager.applyHookActivity("task-1", { modelId: "reported-model" });
++		manager.applyHookActivity("task-1", { activityText: "Using Read" });
++		expect(manager.getSummary("task-1")?.modelId).toBe("reported-model");
++		const restored = new TerminalSessionManager();
++		const saved = manager.getSummary("task-1");
++		if (!saved) throw new Error("Missing summary");
++		restored.hydrateFromRecord({ "task-1": saved });
++		expect(restored.getSummary("task-1")?.modelId).toBe("reported-model");
++	});
++
+ 	it("stores hook activity metadata on sessions", () => {
+ 		const manager = new TerminalSessionManager();
+ 		manager.hydrateFromRecord({
+diff --git a/test/runtime/trpc/runtime-api.test.ts b/test/runtime/trpc/runtime-api.test.ts
+index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..c581254a6c85e2beaea6c0547936aeec1999235e 100644
+--- a/test/runtime/trpc/runtime-api.test.ts
++++ b/test/runtime/trpc/runtime-api.test.ts
+@@ -413,6 +413,40 @@ describe("createRuntimeApi startTaskSession", () => {
+ 		rmSync(`${mcpOauthSettingsPath}.lock`, { force: true });
+ 	});
+ 
++	it.each([true, false])("passes per-task CLI settings through the start API (env enabled: %s)", async (enabled) => {
++		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
++		const terminalManager = { startTaskSession: vi.fn(async () => createSummary()), applyTurnCheckpoint: vi.fn() };
++		const api = createTestRuntimeApi({
++			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
++			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
++			setActiveRuntimeConfig: vi.fn(),
++			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
++			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
++			resolveInteractiveShellCommand: vi.fn(),
++			runCommand: vi.fn(),
++		});
++		const result = await api.startTaskSession(
++			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
++			{
++				taskId: "task-1",
++				prompt: "Build",
++				baseRef: "main",
++				taskOverrides: {
++					cliModel: "task-model",
++					environment: { enabled, variables: [{ name: "TOKEN", value: "literal $value" }] },
++				},
++			},
++		);
++		expect(result.ok).toBe(true);
++		expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
++			expect.objectContaining({
++				args: ["--model", "task-model"],
++				env: enabled ? { TOKEN: "literal $value" } : undefined,
++				modelId: "task-model",
++			}),
++		);
++	});
++
+ 	it("reuses an existing worktree path before falling back to ensure", async () => {
+ 		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+ 
+diff --git a/web-ui/src/App.tsx b/web-ui/src/App.tsx
+index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c02f1cf198 100644
+--- a/web-ui/src/App.tsx
++++ b/web-ui/src/App.tsx
+@@ -302,6 +302,8 @@ export default function App(): ReactElement {
+ 		setNewTaskBranchRef,
+ 		newTaskAgentId,
+ 		setNewTaskAgentId,
++		newTaskOverrides,
++		setNewTaskOverrides,
+ 		newTaskClineSettings,
+ 		setNewTaskClineSettings,
+ 		editingTaskId,
+@@ -320,6 +322,8 @@ export default function App(): ReactElement {
+ 		setEditTaskBranchRef,
+ 		editTaskAgentId,
+ 		setEditTaskAgentId,
++		editTaskOverrides,
++		setEditTaskOverrides,
+ 		editTaskClineSettings,
+ 		setEditTaskClineSettings,
+ 		handleOpenCreateTask,
+@@ -329,6 +333,7 @@ export default function App(): ReactElement {
+ 		handleSaveEditedTask,
+ 		handleSaveAndStartEditedTask,
+ 		handleSaveTaskTitle,
++		handleSaveTaskLabels,
+ 		handleCreateTask,
+ 		handleCreateTasks,
+ 		resetTaskEditorState,
+@@ -783,6 +788,8 @@ export default function App(): ReactElement {
+ 			onBranchRefChange={setEditTaskBranchRef}
+ 			agentId={editTaskAgentId}
+ 			onAgentIdChange={setEditTaskAgentId}
++			taskOverrides={editTaskOverrides}
++			onTaskOverridesChange={setEditTaskOverrides}
+ 			clineSettings={editTaskClineSettings}
+ 			onClineSettingsChange={setEditTaskClineSettings}
+ 			defaultAgentId={runtimeProjectConfig?.selectedAgentId ?? null}
+@@ -944,6 +951,7 @@ export default function App(): ReactElement {
+ 												inlineTaskEditor={inlineTaskEditor}
+ 												onEditTask={handleOpenEditTask}
+ 												onSaveTaskTitle={handleSaveTaskTitle}
++												onSaveTaskLabels={handleSaveTaskLabels}
+ 												onCommitTask={handleCommitTask}
+ 												onOpenPrTask={handleOpenPrTask}
+ 												onCancelAutomaticTaskAction={handleCancelAutomaticTaskAction}
+@@ -959,6 +967,7 @@ export default function App(): ReactElement {
+ 													selectedCard ? undefined : handleProgrammaticCardMoveReady
+ 												}
+ 												onDragEnd={handleDragEnd}
++												defaultAgentId={runtimeProjectConfig?.selectedAgentId}
+ 												defaultClineModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
+ 											/>
+ 										)}
+@@ -1029,6 +1038,7 @@ export default function App(): ReactElement {
+ 										handleOpenEditTask(task, { preserveDetailSelection: true });
+ 									}}
+ 									onSaveTaskTitle={handleSaveTaskTitle}
++									onSaveTaskLabels={handleSaveTaskLabels}
+ 									onCommitTask={handleCommitTask}
+ 									onOpenPrTask={handleOpenPrTask}
+ 									onAgentCommitTask={handleAgentCommitTask}
+@@ -1131,6 +1141,8 @@ export default function App(): ReactElement {
+ 					onBranchRefChange={setNewTaskBranchRef}
+ 					agentId={newTaskAgentId}
+ 					onAgentIdChange={setNewTaskAgentId}
++					taskOverrides={newTaskOverrides}
++					onTaskOverridesChange={setNewTaskOverrides}
+ 					clineSettings={newTaskClineSettings}
+ 					onClineSettingsChange={setNewTaskClineSettings}
+ 					defaultAgentId={runtimeProjectConfig?.selectedAgentId ?? null}
+diff --git a/web-ui/src/components/board-card.test.tsx b/web-ui/src/components/board-card.test.tsx
+index 364ef22dfd160b34e916fd6c123bf9a921608c20..4c50fb250f3e301e6b6fc5b900d35dbd0f73d445 100644
+--- a/web-ui/src/components/board-card.test.tsx
++++ b/web-ui/src/components/board-card.test.tsx
+@@ -180,6 +180,44 @@ describe("BoardCard", () => {
+ 		}
+ 	});
+ 
++	it("shows the running CLI model and lets Done cards edit labels", async () => {
++		const onSaveLabels = vi.fn();
++		await act(async () => {
++			root.render(
++				<TooltipProvider>
++					<BoardCard
++						card={createCard({
++							agentId: "codex",
++							taskOverrides: { cliModel: "configured-model", labels: ["backend"] },
++						})}
++						index={0}
++						columnId="trash"
++						sessionSummary={createSummary("awaiting_review", { agentId: "codex", modelId: "reported-model" })}
++						onSaveLabels={onSaveLabels}
++					/>
++				</TooltipProvider>,
++			);
++		});
++		expect(container.textContent).toContain("reported-model");
++		expect(container.textContent).not.toContain("configured-model");
++		expect(container.textContent).toContain("backend");
++		await act(async () => {
++			(container.querySelector('button[aria-label="Edit labels"]') as HTMLButtonElement).click();
++		});
++		await act(async () => {
++			(container.querySelector('button[aria-label="Remove label backend"]') as HTMLButtonElement).click();
++		});
++		expect(onSaveLabels).toHaveBeenCalledWith("task-1", []);
++	});
++
++	it("shows an honest model fallback for CLI defaults", async () => {
++		await act(async () => {
++			root.render(<BoardCard card={createCard()} index={0} columnId="backlog" defaultAgentId="claude" />);
++		});
++		expect(container.textContent).toContain("Claude Code");
++		expect(container.textContent).toContain("CLI default (not reported)");
++	});
++
+ 	it("shows a mode-specific cancel button and hides it after canceling auto review", async () => {
+ 		await act(async () => {
+ 			root.render(<Harness />);
+diff --git a/web-ui/src/components/board-card.tsx b/web-ui/src/components/board-card.tsx
+index 6b005e04ba0ef8f4ea934a145aa8743c1fd3d63b..48068a247fcb54aea6315dc74b03c9ed0ff359a0 100644
+--- a/web-ui/src/components/board-card.tsx
++++ b/web-ui/src/components/board-card.tsx
+@@ -2,7 +2,7 @@ import { Draggable } from "@hello-pangea/dnd";
+ import { getRuntimeAgentCatalogEntry } from "@runtime-agent-catalog";
+ import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
+ import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
+-import { AlertCircle, AlertTriangle, Bot, GitBranch, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
++import { AlertCircle, AlertTriangle, Bot, GitBranch, Pencil, Play, RotateCcw, Tag, Trash2 } from "lucide-react";
+ import type { KeyboardEvent, MouseEvent } from "react";
+ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+ import { createPortal } from "react-dom";
+@@ -11,11 +11,12 @@ import {
+ 	formatClineSelectedModelButtonText,
+ 	resolveClineModelDisplayName,
+ } from "@/components/detail-panels/cline-model-picker-options";
++import { TaskLabelsEditor } from "@/components/task-labels-editor";
+ import { Button } from "@/components/ui/button";
+ import { cn } from "@/components/ui/cn";
+ import { Spinner } from "@/components/ui/spinner";
+ import { Tooltip } from "@/components/ui/tooltip";
+-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
++import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
+ import { useTaskWorkspaceSnapshotValue } from "@/stores/workspace-metadata-store";
+ import type { BoardCard as BoardCardModel, BoardColumnId } from "@/types";
+ import { getTaskAutoReviewCancelButtonLabel } from "@/types";
+@@ -221,6 +222,7 @@ export function BoardCard({
+ 	onMoveToTrash,
+ 	onRestoreFromTrash,
+ 	onSaveTitle,
++	onSaveLabels,
+ 	onCommit,
+ 	onOpenPr,
+ 	onCancelAutomaticAction,
+@@ -233,6 +235,7 @@ export function BoardCard({
+ 	isDependencyTarget = false,
+ 	isDependencyLinking = false,
+ 	workspacePath,
++	defaultAgentId,
+ 	defaultClineModelId = null,
+ }: {
+ 	card: BoardCardModel;
+@@ -245,6 +248,7 @@ export function BoardCard({
+ 	onMoveToTrash?: (taskId: string) => void;
+ 	onRestoreFromTrash?: (taskId: string) => void;
+ 	onSaveTitle?: (taskId: string, title: string) => void;
++	onSaveLabels?: (taskId: string, labels: string[]) => void;
+ 	onCommit?: (taskId: string) => void;
+ 	onOpenPr?: (taskId: string) => void;
+ 	onCancelAutomaticAction?: (taskId: string) => void;
+@@ -257,9 +261,11 @@ export function BoardCard({
+ 	isDependencyTarget?: boolean;
+ 	isDependencyLinking?: boolean;
+ 	workspacePath?: string | null;
++	defaultAgentId?: RuntimeAgentId | null;
+ 	defaultClineModelId?: string | null;
+ }): React.ReactElement {
+ 	const [isHovered, setIsHovered] = useState(false);
++	const [isEditingLabels, setIsEditingLabels] = useState(false);
+ 	const [isEditingTitle, setIsEditingTitle] = useState(false);
+ 	const [draftTitle, setDraftTitle] = useState(card.title);
+ 	const titleInputRef = useRef<HTMLInputElement | null>(null);
+@@ -430,13 +436,21 @@ export function BoardCard({
+ 	const isAnyGitActionLoading = isCommitLoading || isOpenPrLoading;
+ 	const cancelAutomaticActionLabel =
+ 		!isTrashCard && card.autoReviewEnabled ? getTaskAutoReviewCancelButtonLabel(card.autoReviewMode) : null;
+-	const agentOverrideLabel = useMemo(
+-		() => (card.agentId ? (getRuntimeAgentCatalogEntry(card.agentId)?.label ?? card.agentId) : null),
+-		[card.agentId],
+-	);
++	const effectiveAgentId = sessionSummary?.agentId ?? card.agentId ?? defaultAgentId;
++	const agentOverrideLabel = effectiveAgentId
++		? (getRuntimeAgentCatalogEntry(effectiveAgentId)?.label ?? effectiveAgentId)
++		: null;
+ 	const modelOverrideLabel = useMemo(() => {
++		if (sessionSummary?.modelId) return sessionSummary.modelId;
++		if (effectiveAgentId && effectiveAgentId !== "cline") {
++			return (effectiveAgentId === "codex" || effectiveAgentId === "claude") &&
++				!sessionSummary?.startedAt &&
++				card.taskOverrides?.cliModel?.trim()
++				? card.taskOverrides.cliModel.trim()
++				: "CLI default (not reported)";
++		}
+ 		if (card.clineSettings === undefined) {
+-			return null;
++			return effectiveAgentId === "cline" ? defaultClineModelId : null;
+ 		}
+ 		const explicitReasoningLabel = card.clineSettings.reasoningEffort
+ 			? formatClineReasoningEffortLabel(card.clineSettings.reasoningEffort)
+@@ -461,7 +475,14 @@ export function BoardCard({
+ 			reasoningEffort: inheritedReasoningEffort,
+ 			showReasoningEffort: Boolean(inheritedReasoningEffort),
+ 		});
+-	}, [card.clineSettings, defaultClineModelId]);
++	}, [
++		card.clineSettings,
++		card.taskOverrides?.cliModel,
++		defaultClineModelId,
++		effectiveAgentId,
++		sessionSummary?.modelId,
++		sessionSummary?.startedAt,
++	]);
+ 	const taskAgentSettingsLabel = useMemo(() => {
+ 		const parts = [agentOverrideLabel, modelOverrideLabel].filter((value): value is string => Boolean(value));
+ 		return parts.length > 0 ? parts.join(" · ") : null;
+@@ -710,6 +731,41 @@ export function BoardCard({
+ 									</p>
+ 								</div>
+ 							) : null}
++							<div
++								className="mt-2 flex flex-wrap items-center gap-1"
++								onClick={stopEvent}
++								onMouseDown={stopEvent}
++								onKeyDown={(event) => event.stopPropagation()}
++							>
++								{!isEditingLabels
++									? card.taskOverrides?.labels?.map((label) => (
++											<span
++												key={label}
++												className="rounded-sm bg-surface-3 px-2 py-0.5 text-xs text-text-secondary"
++											>
++												{label}
++											</span>
++										))
++									: null}
++								{onSaveLabels ? (
++									<Button
++										variant="ghost"
++										size="sm"
++										icon={<Tag size={12} />}
++										aria-label="Edit labels"
++										aria-expanded={isEditingLabels}
++										onClick={() => setIsEditingLabels(!isEditingLabels)}
++									/>
++								) : null}
++								{isEditingLabels && onSaveLabels ? (
++									<div className="w-full">
++										<TaskLabelsEditor
++											labels={card.taskOverrides?.labels}
++											onChange={(labels) => onSaveLabels(card.id, labels)}
++										/>
++									</div>
++								) : null}
++							</div>
+ 							{taskAgentSettingsLabel ? (
+ 								<div className="mt-1">
+ 									<span
+diff --git a/web-ui/src/components/board-column.tsx b/web-ui/src/components/board-column.tsx
+index 0afd24e0e00f1288b5bf23bfe539bbb7914291cd..1ff5d3c160b2f40b1be52713d005a915ffdb00db 100644
+--- a/web-ui/src/components/board-column.tsx
++++ b/web-ui/src/components/board-column.tsx
+@@ -1,11 +1,10 @@
+ import { Droppable } from "@hello-pangea/dnd";
+ import { Play, Plus, Trash2 } from "lucide-react";
+ import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+-
+ import { BoardCard } from "@/components/board-card";
+ import { Button } from "@/components/ui/button";
+ import { ColumnIndicator } from "@/components/ui/column-indicator";
+-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
++import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
+ import { isCardDropDisabled, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
+ import type { BoardCard as BoardCardModel, BoardColumnId, BoardColumn as BoardColumnModel } from "@/types";
+ 
+@@ -20,6 +19,7 @@ export function BoardColumn({
+ 	inlineTaskEditor,
+ 	onEditTask,
+ 	onSaveTitle,
++	onSaveLabels,
+ 	onCommitTask,
+ 	onOpenPrTask,
+ 	onCancelAutomaticTaskAction,
+@@ -38,6 +38,7 @@ export function BoardColumn({
+ 	dependencyTargetTaskId,
+ 	isDependencyLinking,
+ 	workspacePath,
++	defaultAgentId,
+ 	defaultClineModelId,
+ }: {
+ 	column: BoardColumnModel;
+@@ -50,6 +51,7 @@ export function BoardColumn({
+ 	inlineTaskEditor?: ReactNode;
+ 	onEditTask?: (card: BoardCardModel) => void;
+ 	onSaveTitle?: (taskId: string, title: string) => void;
++	onSaveLabels?: (taskId: string, labels: string[]) => void;
+ 	onCommitTask?: (taskId: string) => void;
+ 	onOpenPrTask?: (taskId: string) => void;
+ 	onCancelAutomaticTaskAction?: (taskId: string) => void;
+@@ -68,6 +70,7 @@ export function BoardColumn({
+ 	dependencyTargetTaskId?: string | null;
+ 	isDependencyLinking?: boolean;
+ 	workspacePath?: string | null;
++	defaultAgentId?: RuntimeAgentId | null;
+ 	defaultClineModelId?: string | null;
+ }): React.ReactElement {
+ 	const canCreate = column.id === "backlog" && onCreateTask;
+@@ -187,8 +190,10 @@ export function BoardColumn({
+ 											isDependencyTarget={dependencyTargetTaskId === card.id}
+ 											isDependencyLinking={isDependencyLinking}
+ 											workspacePath={workspacePath}
++											defaultAgentId={defaultAgentId}
+ 											defaultClineModelId={defaultClineModelId}
+ 											onSaveTitle={onSaveTitle}
++											onSaveLabels={onSaveLabels}
+ 											onClick={() => {
+ 												if (column.id === "backlog") {
+ 													onEditTask?.(card);
+diff --git a/web-ui/src/components/card-detail-view.tsx b/web-ui/src/components/card-detail-view.tsx
+index b3b8be454c37d5764ba9437666d5fbd3c7d5793b..bb42fe483b775c3688d1e0f66b30adf34d7d4414 100644
+--- a/web-ui/src/components/card-detail-view.tsx
++++ b/web-ui/src/components/card-detail-view.tsx
+@@ -327,6 +327,7 @@ export function CardDetailView({
+ 	inlineTaskEditor,
+ 	onEditTask,
+ 	onSaveTaskTitle,
++	onSaveTaskLabels,
+ 	onCommitTask,
+ 	onOpenPrTask,
+ 	onAgentCommitTask,
+@@ -385,6 +386,7 @@ export function CardDetailView({
+ 	inlineTaskEditor?: ReactNode;
+ 	onEditTask?: (card: BoardCard) => void;
+ 	onSaveTaskTitle?: (taskId: string, title: string) => void;
++	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
+ 	onCommitTask?: (taskId: string) => void;
+ 	onOpenPrTask?: (taskId: string) => void;
+ 	onAgentCommitTask?: (taskId: string) => void;
+@@ -812,7 +814,9 @@ export function CardDetailView({
+ 							editingTaskId={editingTaskId}
+ 							inlineTaskEditor={inlineTaskEditor}
+ 							onEditTask={onEditTask}
++							defaultAgentId={runtimeConfig?.selectedAgentId}
+ 							onSaveTaskTitle={onSaveTaskTitle}
++							onSaveTaskLabels={onSaveTaskLabels}
+ 							onCommitTask={onCommitTask}
+ 							onOpenPrTask={onOpenPrTask}
+ 							onMoveToTrashTask={onMoveReviewCardToTrash}
+diff --git a/web-ui/src/components/detail-panels/column-context-panel.tsx b/web-ui/src/components/detail-panels/column-context-panel.tsx
+index 31bfae6662c880e6d431d9f15f4880816ecdd711..92647401c90b45395e6aa50314db6f8608a5f3fe 100644
+--- a/web-ui/src/components/detail-panels/column-context-panel.tsx
++++ b/web-ui/src/components/detail-panels/column-context-panel.tsx
+@@ -2,11 +2,10 @@ import { type BeforeCapture, DragDropContext, Droppable, type DropResult } from
+ import { ChevronDown, ChevronRight, Play, Trash2 } from "lucide-react";
+ import type { ReactNode } from "react";
+ import { useCallback, useEffect, useRef, useState } from "react";
+-
+ import { BoardCard } from "@/components/board-card";
+ import { Button } from "@/components/ui/button";
+ import { ColumnIndicator } from "@/components/ui/column-indicator";
+-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
++import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
+ import { findCardColumnId, isCardDropDisabled } from "@/state/drag-rules";
+ import type { BoardCard as BoardCardModel, BoardColumn, BoardColumnId, CardSelection } from "@/types";
+ 
+@@ -24,6 +23,7 @@ function ColumnSection({
+ 	inlineTaskEditor,
+ 	onEditTask,
+ 	onSaveTitle,
++	onSaveLabels,
+ 	onCommitTask,
+ 	onOpenPrTask,
+ 	onMoveToTrashTask,
+@@ -33,6 +33,7 @@ function ColumnSection({
+ 	moveToTrashLoadingById,
+ 	activeDragSourceColumnId,
+ 	workspacePath,
++	defaultAgentId,
+ 	defaultClineModelId,
+ }: {
+ 	column: BoardColumn;
+@@ -48,6 +49,7 @@ function ColumnSection({
+ 	inlineTaskEditor?: ReactNode;
+ 	onEditTask?: (card: BoardCardModel) => void;
+ 	onSaveTitle?: (taskId: string, title: string) => void;
++	onSaveLabels?: (taskId: string, labels: string[]) => void;
+ 	onCommitTask?: (taskId: string) => void;
+ 	onOpenPrTask?: (taskId: string) => void;
+ 	onMoveToTrashTask?: (taskId: string) => void;
+@@ -57,6 +59,7 @@ function ColumnSection({
+ 	moveToTrashLoadingById?: Record<string, boolean>;
+ 	activeDragSourceColumnId?: BoardColumnId | null;
+ 	workspacePath?: string | null;
++	defaultAgentId?: RuntimeAgentId | null;
+ 	defaultClineModelId?: string | null;
+ }): React.ReactElement {
+ 	const [open, setOpen] = useState(defaultOpen);
+@@ -199,8 +202,10 @@ function ColumnSection({
+ 												isOpenPrLoading={openPrTaskLoadingById?.[card.id] ?? false}
+ 												isMoveToTrashLoading={moveToTrashLoadingById?.[card.id] ?? false}
+ 												workspacePath={workspacePath}
++												defaultAgentId={defaultAgentId}
+ 												defaultClineModelId={defaultClineModelId}
+ 												onSaveTitle={onSaveTitle}
++												onSaveLabels={onSaveLabels}
+ 												onClick={() => {
+ 													if (column.id === "backlog") {
+ 														onEditTask?.(card);
+@@ -230,6 +235,7 @@ function ColumnSection({
+ export function ColumnContextPanel({
+ 	selection,
+ 	workspacePath,
++	defaultAgentId,
+ 	defaultClineModelId,
+ 	onCardSelect,
+ 	taskSessions,
+@@ -242,6 +248,7 @@ export function ColumnContextPanel({
+ 	inlineTaskEditor,
+ 	onEditTask,
+ 	onSaveTaskTitle,
++	onSaveTaskLabels,
+ 	onCommitTask,
+ 	onOpenPrTask,
+ 	onMoveToTrashTask,
+@@ -264,6 +271,7 @@ export function ColumnContextPanel({
+ 	inlineTaskEditor?: ReactNode;
+ 	onEditTask?: (card: BoardCardModel) => void;
+ 	onSaveTaskTitle?: (taskId: string, title: string) => void;
++	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
+ 	onCommitTask?: (taskId: string) => void;
+ 	onOpenPrTask?: (taskId: string) => void;
+ 	onMoveToTrashTask?: (taskId: string) => void;
+@@ -272,6 +280,7 @@ export function ColumnContextPanel({
+ 	openPrTaskLoadingById?: Record<string, boolean>;
+ 	moveToTrashLoadingById?: Record<string, boolean>;
+ 	panelWidth?: string;
++	defaultAgentId?: RuntimeAgentId | null;
+ 	defaultClineModelId?: string | null;
+ }): React.ReactElement {
+ 	const [activeDragSourceColumnId, setActiveDragSourceColumnId] = useState<BoardColumnId | null>(null);
+@@ -352,7 +361,8 @@ export function ColumnContextPanel({
+ 							editingTaskId={column.id === "backlog" ? editingTaskId : null}
+ 							inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
+ 							onEditTask={column.id === "backlog" ? onEditTask : undefined}
+-							onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
++							onSaveTitle={onSaveTaskTitle}
++							onSaveLabels={onSaveTaskLabels}
+ 							onCommitTask={column.id === "review" ? onCommitTask : undefined}
+ 							onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
+ 							onMoveToTrashTask={column.id === "review" ? onMoveToTrashTask : undefined}
+@@ -362,6 +372,7 @@ export function ColumnContextPanel({
+ 							moveToTrashLoadingById={column.id === "review" ? moveToTrashLoadingById : undefined}
+ 							activeDragSourceColumnId={activeDragSourceColumnId}
+ 							workspacePath={workspacePath}
++							defaultAgentId={defaultAgentId}
+ 							defaultClineModelId={defaultClineModelId}
+ 						/>
+ 					))}
+diff --git a/web-ui/src/components/kanban-board.tsx b/web-ui/src/components/kanban-board.tsx
+index 2aec21148d151006e817f8e0d0d41909a171400d..1da4500170f031967620bd71126568b5f9d016c7 100644
+--- a/web-ui/src/components/kanban-board.tsx
++++ b/web-ui/src/components/kanban-board.tsx
+@@ -10,11 +10,10 @@ import {
+ } from "@hello-pangea/dnd";
+ import type { ReactNode } from "react";
+ import { useCallback, useEffect, useRef, useState } from "react";
+-
+ import { BoardColumn } from "@/components/board-column";
+ import { DependencyOverlay } from "@/components/dependencies/dependency-overlay";
+ import { useDependencyLinking } from "@/components/dependencies/use-dependency-linking";
+-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
++import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
+ import { canCreateTaskDependency } from "@/state/board-state";
+ import { findCardColumnId, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
+ import type { BoardCard, BoardColumnId, BoardData, BoardDependency } from "@/types";
+@@ -39,6 +38,7 @@ export function KanbanBoard({
+ 	inlineTaskEditor,
+ 	onEditTask,
+ 	onSaveTaskTitle,
++	onSaveTaskLabels,
+ 	onCommitTask,
+ 	onOpenPrTask,
+ 	onCancelAutomaticTaskAction,
+@@ -53,6 +53,7 @@ export function KanbanBoard({
+ 	onDragEnd,
+ 	onRequestProgrammaticCardMoveReady,
+ 	workspacePath,
++	defaultAgentId,
+ 	defaultClineModelId,
+ }: {
+ 	data: BoardData;
+@@ -66,6 +67,7 @@ export function KanbanBoard({
+ 	inlineTaskEditor?: ReactNode;
+ 	onEditTask?: (card: BoardCard) => void;
+ 	onSaveTaskTitle?: (taskId: string, title: string) => void;
++	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
+ 	onCommitTask?: (taskId: string) => void;
+ 	onOpenPrTask?: (taskId: string) => void;
+ 	onCancelAutomaticTaskAction?: (taskId: string) => void;
+@@ -80,6 +82,7 @@ export function KanbanBoard({
+ 	onDragEnd: (result: DropResult) => void;
+ 	onRequestProgrammaticCardMoveReady?: (requestMove: RequestProgrammaticCardMove | null) => void;
+ 	workspacePath?: string | null;
++	defaultAgentId?: RuntimeAgentId | null;
+ 	defaultClineModelId?: string | null;
+ }): React.ReactElement {
+ 	const dragOccurredRef = useRef(false);
+@@ -392,7 +395,8 @@ export function KanbanBoard({
+ 						editingTaskId={column.id === "backlog" ? editingTaskId : null}
+ 						inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
+ 						onEditTask={column.id === "backlog" ? onEditTask : undefined}
+-						onSaveTitle={column.id !== "trash" ? onSaveTaskTitle : undefined}
++						onSaveTitle={onSaveTaskTitle}
++						onSaveLabels={onSaveTaskLabels}
+ 						onCommitTask={column.id === "review" ? onCommitTask : undefined}
+ 						onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}
+ 						onCancelAutomaticTaskAction={onCancelAutomaticTaskAction}
+@@ -410,6 +414,7 @@ export function KanbanBoard({
+ 						dependencyTargetTaskId={dependencyLinking.draft?.targetTaskId ?? null}
+ 						isDependencyLinking={dependencyLinking.draft !== null}
+ 						workspacePath={workspacePath}
++						defaultAgentId={defaultAgentId}
+ 						defaultClineModelId={defaultClineModelId}
+ 						onCardClick={(card) => {
+ 							if (!dragOccurredRef.current) {
+diff --git a/web-ui/src/components/task-create-dialog.tsx b/web-ui/src/components/task-create-dialog.tsx
+index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37174c6542 100644
+--- a/web-ui/src/components/task-create-dialog.tsx
++++ b/web-ui/src/components/task-create-dialog.tsx
+@@ -1,7 +1,6 @@
+ import * as RadixCheckbox from "@radix-ui/react-checkbox";
+ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+ import * as RadixSwitch from "@radix-ui/react-switch";
+-
+ import {
+ 	ArrowBigUp,
+ 	ArrowLeft,
+@@ -18,15 +17,20 @@ import {
+ import type { Dispatch, ReactElement, SetStateAction } from "react";
+ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+ import { useHotkeys } from "react-hotkeys-hook";
+-
+ import type { BranchSelectOption } from "@/components/branch-select-dropdown";
+ import { BranchSelectDropdown } from "@/components/branch-select-dropdown";
+ import { TaskAgentModelPicker, useTaskAgentModelPicker } from "@/components/task-agent-model-picker";
++import { TaskOverridesEditor } from "@/components/task-overrides-editor";
+ import { TaskPromptComposer } from "@/components/task-prompt-composer";
+ import { Button } from "@/components/ui/button";
+ import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
+ import { NativeSelect } from "@/components/ui/native-select";
+-import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
++import type {
++	RuntimeAgentId,
++	RuntimeClineReasoningEffort,
++	RuntimeTaskClineSettings,
++	TaskOverrides,
++} from "@/runtime/types";
+ import { LocalStorageKey } from "@/storage/local-storage-store";
+ import type { TaskAutoReviewMode, TaskImage } from "@/types";
+ import { isMacPlatform, pasteShortcutLabel } from "@/utils/platform";
+@@ -120,6 +124,8 @@ export function TaskCreateDialog({
+ 	onBranchRefChange,
+ 	agentId,
+ 	onAgentIdChange,
++	taskOverrides,
++	onTaskOverridesChange,
+ 	clineSettings,
+ 	onClineSettingsChange,
+ 	defaultAgentId,
+@@ -151,6 +157,8 @@ export function TaskCreateDialog({
+ 	onBranchRefChange: (value: string) => void;
+ 	agentId?: RuntimeAgentId | undefined;
+ 	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
++	taskOverrides?: TaskOverrides;
++	onTaskOverridesChange?: (value: TaskOverrides) => void;
+ 	clineSettings?: RuntimeTaskClineSettings | undefined;
+ 	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
+ 	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
+@@ -596,6 +604,13 @@ export function TaskCreateDialog({
+ 						/>
+ 					) : null}
+ 				</div>
++				{onTaskOverridesChange ? (
++					<TaskOverridesEditor
++						value={taskOverrides}
++						onChange={onTaskOverridesChange}
++						agentId={agentId ?? defaultAgentId}
++					/>
++				) : null}
+ 			</DialogBody>
+ 			<DialogFooter>
+ 				<label
+diff --git a/web-ui/src/components/task-inline-create-card.tsx b/web-ui/src/components/task-inline-create-card.tsx
+index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa2b30e12d 100644
+--- a/web-ui/src/components/task-inline-create-card.tsx
++++ b/web-ui/src/components/task-inline-create-card.tsx
+@@ -3,13 +3,18 @@ import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
+ import { ArrowBigUp, Check, Command, CornerDownLeft } from "lucide-react";
+ import { type Dispatch, type ReactElement, type SetStateAction, useCallback, useRef, useState } from "react";
+ import { useHotkeys } from "react-hotkeys-hook";
+-
+ import { BranchSelectDropdown, type BranchSelectOption } from "@/components/branch-select-dropdown";
+ import { TaskAgentModelPicker, useTaskAgentModelPicker } from "@/components/task-agent-model-picker";
++import { TaskOverridesEditor } from "@/components/task-overrides-editor";
+ import { TaskPromptComposer } from "@/components/task-prompt-composer";
+ import { Button } from "@/components/ui/button";
+ import { NativeSelect } from "@/components/ui/native-select";
+-import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
++import type {
++	RuntimeAgentId,
++	RuntimeClineReasoningEffort,
++	RuntimeTaskClineSettings,
++	TaskOverrides,
++} from "@/runtime/types";
+ import type { TaskAutoReviewMode, TaskImage } from "@/types";
+ import { pasteShortcutLabel } from "@/utils/platform";
+ import { useDocumentEvent, useMeasure } from "@/utils/react-use";
+@@ -69,6 +74,8 @@ export function TaskInlineCreateCard({
+ 	idPrefix = "inline-task",
+ 	agentId,
+ 	onAgentIdChange,
++	taskOverrides,
++	onTaskOverridesChange,
+ 	clineSettings,
+ 	onClineSettingsChange,
+ 	defaultAgentId,
+@@ -101,6 +108,8 @@ export function TaskInlineCreateCard({
+ 	idPrefix?: string;
+ 	agentId?: RuntimeAgentId | undefined;
+ 	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
++	taskOverrides?: TaskOverrides;
++	onTaskOverridesChange?: (value: TaskOverrides) => void;
+ 	clineSettings?: RuntimeTaskClineSettings | undefined;
+ 	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
+ 	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
+@@ -330,6 +339,13 @@ export function TaskInlineCreateCard({
+ 				) : null}
+ 			</div>
+ 
++			{onTaskOverridesChange ? (
++				<TaskOverridesEditor
++					value={taskOverrides}
++					onChange={onTaskOverridesChange}
++					agentId={agentId ?? defaultAgentId}
++				/>
++			) : null}
+ 			<div className={`flex gap-2 mt-3 ${mode === "edit" ? "justify-end" : "justify-between"}`}>
+ 				{mode === "create" && onCancel ? (
+ 					<Button variant="default" size="sm" className="whitespace-nowrap" onClick={onCancel}>
+diff --git a/web-ui/src/hooks/use-task-editor.test.tsx b/web-ui/src/hooks/use-task-editor.test.tsx
+index 20e7f4a1b1b50f7d402e41cd337b52fe0d466842..5f5b90a95ac7bd718e3277d7e0f90fd24534af54 100644
+--- a/web-ui/src/hooks/use-task-editor.test.tsx
++++ b/web-ui/src/hooks/use-task-editor.test.tsx
+@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ import { useTaskEditor } from "@/hooks/use-task-editor";
+-import type { RuntimeAgentId, RuntimeTaskClineSettings } from "@/runtime/types";
++import type { RuntimeAgentId, RuntimeTaskClineSettings, TaskOverrides } from "@/runtime/types";
+ import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
+ 
+ function createTask(taskId: string, prompt: string, createdAt: number, overrides: Partial<BoardCard> = {}): BoardCard {
+@@ -34,6 +34,10 @@ function createBoard(tasks: BoardCard[] = []): BoardData {
+ }
+ 
+ interface HookSnapshot {
++	newTaskOverrides?: TaskOverrides;
++	editTaskOverrides?: TaskOverrides;
++	setNewTaskOverrides: (value: TaskOverrides) => void;
++	setEditTaskOverrides: (value: TaskOverrides) => void;
+ 	board: BoardData;
+ 	isInlineTaskCreateOpen: boolean;
+ 	newTaskPrompt: string;
+@@ -91,6 +95,10 @@ function HookHarness({
+ 
+ 	useEffect(() => {
+ 		onSnapshot({
++			newTaskOverrides: editor.newTaskOverrides,
++			editTaskOverrides: editor.editTaskOverrides,
++			setNewTaskOverrides: editor.setNewTaskOverrides,
++			setEditTaskOverrides: editor.setEditTaskOverrides,
+ 			board,
+ 			isInlineTaskCreateOpen: editor.isInlineTaskCreateOpen,
+ 			newTaskPrompt: editor.newTaskPrompt,
+@@ -118,6 +126,8 @@ function HookHarness({
+ 		});
+ 	}, [
+ 		board,
++		editor.newTaskOverrides,
++		editor.editTaskOverrides,
+ 		editor.handleCreateTask,
+ 		editor.handleCreateTasks,
+ 		editor.handleOpenCreateTask,
+@@ -174,6 +184,56 @@ describe("useTaskEditor", () => {
+ 		localStorage.clear();
+ 	});
+ 
++	it("creates, reloads, edits, and clears per-task overrides without leaking them to the next task", async () => {
++		let latest: HookSnapshot | null = null;
++		const settings: TaskOverrides = {
++			labels: ["backend"],
++			cliModel: "custom-model",
++			environment: { enabled: true, variables: [{ name: "TOKEN", value: "literal" }] },
++		};
++		await act(async () => {
++			root.render(
++				<HookHarness
++					initialBoard={createBoard()}
++					onSnapshot={(value) => {
++						latest = value;
++					}}
++				/>,
++			);
++		});
++		await act(async () => {
++			requireSnapshot(latest).handleOpenCreateTask();
++		});
++		await act(async () => {
++			requireSnapshot(latest).setNewTaskPrompt("Build feature");
++			requireSnapshot(latest).setNewTaskOverrides(settings);
++		});
++		await act(async () => {
++			requireSnapshot(latest).handleCreateTask();
++		});
++		const card = requireSnapshot(latest).board.columns[0]?.cards[0];
++		if (!card) throw new Error("Missing created task");
++		expect(card.taskOverrides).toEqual(settings);
++		expect(requireSnapshot(latest).newTaskOverrides).toBeUndefined();
++		await act(async () => {
++			requireSnapshot(latest).handleOpenEditTask(card);
++		});
++		expect(requireSnapshot(latest).editTaskOverrides).toEqual(settings);
++		await act(async () => {
++			requireSnapshot(latest).setEditTaskOverrides({
++				labels: [],
++				environment: { enabled: false, variables: [{ name: "TOKEN", value: "literal" }] },
++			});
++		});
++		await act(async () => {
++			requireSnapshot(latest).handleSaveEditedTask();
++		});
++		expect(requireSnapshot(latest).board.columns[0]?.cards[0]?.taskOverrides).toEqual({
++			labels: [],
++			environment: { ...settings.environment, enabled: false },
++		});
++	});
++
+ 	it("returns the edited task id when saving a task", async () => {
+ 		let latestSnapshot: HookSnapshot | null = null;
+ 		const initialBoard = createBoard([createTask("task-1", "Initial prompt", 1)]);
+diff --git a/web-ui/src/hooks/use-task-editor.ts b/web-ui/src/hooks/use-task-editor.ts
+index d1db8c83ccc214a78efa0da64beecaf4e69c3385..082f0b8af7c0dfd9523726c347300bc9e0f7e5ee 100644
+--- a/web-ui/src/hooks/use-task-editor.ts
++++ b/web-ui/src/hooks/use-task-editor.ts
+@@ -1,6 +1,8 @@
++import { getTaskOverridesError } from "@runtime-task-state";
+ import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
+ import type { Dispatch, SetStateAction } from "react";
+ import { useCallback, useEffect, useMemo, useState } from "react";
++import { toast } from "sonner";
+ 
+ import {
+ 	normalizeStoredTaskAutoReviewMode,
+@@ -8,7 +10,7 @@ import {
+ 	TASK_AUTO_REVIEW_MODE_STORAGE_KEY,
+ 	TASK_START_IN_PLAN_MODE_STORAGE_KEY,
+ } from "@/hooks/app-utils";
+-import type { RuntimeAgentId, RuntimeTaskClineSettings } from "@/runtime/types";
++import type { RuntimeAgentId, RuntimeTaskClineSettings, TaskOverrides } from "@/runtime/types";
+ import { addTaskToColumnWithResult, findCardSelection, updateTask, updateTaskTitle } from "@/state/board-state";
+ import { toTelemetrySelectedAgentId, trackTaskCreated } from "@/telemetry/events";
+ import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
+@@ -52,6 +54,8 @@ export interface UseTaskEditorResult {
+ 	newTaskAgentId: RuntimeAgentId | undefined;
+ 	setNewTaskAgentId: Dispatch<SetStateAction<RuntimeAgentId | undefined>>;
+ 	newTaskClineSettings: RuntimeTaskClineSettings | undefined;
++	newTaskOverrides: TaskOverrides | undefined;
++	setNewTaskOverrides: Dispatch<SetStateAction<TaskOverrides | undefined>>;
+ 	setNewTaskClineSettings: Dispatch<SetStateAction<RuntimeTaskClineSettings | undefined>>;
+ 	editingTaskId: string | null;
+ 	editTaskPrompt: string;
+@@ -70,6 +74,8 @@ export interface UseTaskEditorResult {
+ 	editTaskAgentId: RuntimeAgentId | undefined;
+ 	setEditTaskAgentId: Dispatch<SetStateAction<RuntimeAgentId | undefined>>;
+ 	editTaskClineSettings: RuntimeTaskClineSettings | undefined;
++	editTaskOverrides: TaskOverrides | undefined;
++	setEditTaskOverrides: Dispatch<SetStateAction<TaskOverrides | undefined>>;
+ 	setEditTaskClineSettings: Dispatch<SetStateAction<RuntimeTaskClineSettings | undefined>>;
+ 	handleOpenCreateTask: () => void;
+ 	handleCancelCreateTask: () => void;
+@@ -78,6 +84,7 @@ export interface UseTaskEditorResult {
+ 	handleSaveEditedTask: () => string | null;
+ 	handleSaveAndStartEditedTask: () => void;
+ 	handleSaveTaskTitle: (taskId: string, title: string) => void;
++	handleSaveTaskLabels: (taskId: string, labels: string[]) => void;
+ 	handleCreateTask: (options?: CreateTaskOptions) => string | null;
+ 	handleCreateTasks: (prompts: string[], options?: CreateTaskOptions) => string[];
+ 	resetTaskEditorState: () => void;
+@@ -122,8 +129,10 @@ export function useTaskEditor({
+ 	const [editTaskBranchRef, setEditTaskBranchRef] = useState("");
+ 
+ 	const [newTaskAgentId, setNewTaskAgentId] = useState<RuntimeAgentId | undefined>(undefined);
++	const [newTaskOverrides, setNewTaskOverrides] = useState<TaskOverrides | undefined>();
+ 	const [newTaskClineSettings, setNewTaskClineSettings] = useState<RuntimeTaskClineSettings | undefined>(undefined);
+ 	const [editTaskAgentId, setEditTaskAgentId] = useState<RuntimeAgentId | undefined>(undefined);
++	const [editTaskOverrides, setEditTaskOverrides] = useState<TaskOverrides | undefined>();
+ 	const [editTaskClineSettings, setEditTaskClineSettings] = useState<RuntimeTaskClineSettings | undefined>(undefined);
+ 
+ 	const lastCreatedTaskBranchRef = useMemo(() => {
+@@ -209,6 +218,7 @@ export function useTaskEditor({
+ 
+ 		setNewTaskAgentId(undefined);
+ 		setNewTaskClineSettings(undefined);
++		setNewTaskOverrides(undefined);
+ 		setIsInlineTaskCreateOpen(true);
+ 	}, []);
+ 
+@@ -220,6 +230,7 @@ export function useTaskEditor({
+ 		setNewTaskBranchRef(resolvedDefaultTaskBranchRef);
+ 		setNewTaskAgentId(undefined);
+ 		setNewTaskClineSettings(undefined);
++		setNewTaskOverrides(undefined);
+ 	}, [resolvedDefaultTaskBranchRef]);
+ 
+ 	const handleOpenEditTask = useCallback(
+@@ -243,6 +254,7 @@ export function useTaskEditor({
+ 			setEditTaskBranchRef(fallbackBranch);
+ 			setEditTaskAgentId(task.agentId);
+ 			setEditTaskClineSettings(task.clineSettings);
++			setEditTaskOverrides(task.taskOverrides);
+ 		},
+ 		[resolvedDefaultTaskBranchRef, setSelectedTaskId],
+ 	);
+@@ -259,6 +271,11 @@ export function useTaskEditor({
+ 	}, []);
+ 
+ 	const handleSaveEditedTask = useCallback((): string | null => {
++		const error = getTaskOverridesError(editTaskOverrides);
++		if (error) {
++			toast.error(error);
++			return null;
++		}
+ 		if (!editingTaskId) {
+ 			return null;
+ 		}
+@@ -285,6 +302,7 @@ export function useTaskEditor({
+ 				images: editTaskImages,
+ 				agentId: editTaskAgentId,
+ 				clineSettings: editTaskClineSettings,
++				taskOverrides: editTaskOverrides,
+ 				baseRef,
+ 			});
+ 			return updated.updated ? updated.board : currentBoard;
+@@ -299,12 +317,14 @@ export function useTaskEditor({
+ 		setEditTaskBranchRef("");
+ 		setEditTaskAgentId(undefined);
+ 		setEditTaskClineSettings(undefined);
++		setEditTaskOverrides(undefined);
+ 		return savedTaskId;
+ 	}, [
+ 		editTaskAgentId,
+ 		editTaskAutoReviewEnabled,
+ 		editTaskAutoReviewMode,
+ 		editTaskBranchRef,
++		editTaskOverrides,
+ 		editTaskClineSettings,
+ 		editTaskPrompt,
+ 		editTaskImages,
+@@ -322,6 +342,28 @@ export function useTaskEditor({
+ 		queueTaskStartAfterEdit?.(taskId);
+ 	}, [handleSaveEditedTask, queueTaskStartAfterEdit]);
+ 
++	const handleSaveTaskLabels = useCallback(
++		(taskId: string, labels: string[]) => {
++			setBoard((currentBoard) => ({
++				...currentBoard,
++				columns: currentBoard.columns.map((column) => ({
++					...column,
++					cards: column.cards.map((card) =>
++						card.id === taskId
++							? {
++									...card,
++									taskOverrides: { ...card.taskOverrides, labels: [...new Set(labels)] },
++									updatedAt: Date.now(),
++								}
++							: card,
++					),
++				})),
++			}));
++			setEditTaskOverrides((current) => (editingTaskId === taskId ? { ...current, labels } : current));
++		},
++		[setBoard, editingTaskId],
++	);
++
+ 	const handleSaveTaskTitle = useCallback(
+ 		(taskId: string, title: string) => {
+ 			setBoard((currentBoard) => {
+@@ -334,6 +376,11 @@ export function useTaskEditor({
+ 
+ 	const handleCreateTask = useCallback(
+ 		(options?: CreateTaskOptions): string | null => {
++			const error = getTaskOverridesError(newTaskOverrides);
++			if (error) {
++				toast.error(error);
++				return null;
++			}
+ 			const prompt = newTaskPrompt.trim();
+ 			if (!prompt) {
+ 				return null;
+@@ -352,6 +399,7 @@ export function useTaskEditor({
+ 				images: newTaskImages,
+ 				agentId: newTaskAgentId,
+ 				clineSettings: newTaskClineSettings,
++				taskOverrides: newTaskOverrides,
+ 				baseRef,
+ 			});
+ 			setBoard(created.board);
+@@ -373,6 +421,7 @@ export function useTaskEditor({
+ 			setNewTaskBranchRef(baseRef);
+ 			setNewTaskAgentId(undefined);
+ 			setNewTaskClineSettings(undefined);
++			setNewTaskOverrides(undefined);
+ 			if (!options?.keepDialogOpen) {
+ 				setIsInlineTaskCreateOpen(false);
+ 			}
+@@ -385,6 +434,7 @@ export function useTaskEditor({
+ 			newTaskAutoReviewEnabled,
+ 			newTaskAutoReviewMode,
+ 			newTaskBranchRef,
++			newTaskOverrides,
+ 			newTaskClineSettings,
+ 			newTaskImages,
+ 			newTaskPrompt,
+@@ -399,6 +449,11 @@ export function useTaskEditor({
+ 
+ 	const handleCreateTasks = useCallback(
+ 		(prompts: string[], options?: CreateTaskOptions): string[] => {
++			const error = getTaskOverridesError(newTaskOverrides);
++			if (error) {
++				toast.error(error);
++				return [];
++			}
+ 			const validPrompts = prompts.map((p) => p.trim()).filter(Boolean);
+ 			if (validPrompts.length === 0) {
+ 				return [];
+@@ -418,6 +473,7 @@ export function useTaskEditor({
+ 					images: newTaskImages,
+ 					agentId: newTaskAgentId,
+ 					clineSettings: newTaskClineSettings,
++					taskOverrides: newTaskOverrides,
+ 					baseRef,
+ 				});
+ 				updatedBoard = created.board;
+@@ -444,6 +500,7 @@ export function useTaskEditor({
+ 			setNewTaskBranchRef(baseRef);
+ 			setNewTaskAgentId(undefined);
+ 			setNewTaskClineSettings(undefined);
++			setNewTaskOverrides(undefined);
+ 			if (!options?.keepDialogOpen) {
+ 				setIsInlineTaskCreateOpen(false);
+ 			}
+@@ -456,6 +513,7 @@ export function useTaskEditor({
+ 			newTaskAutoReviewEnabled,
+ 			newTaskAutoReviewMode,
+ 			newTaskBranchRef,
++			newTaskOverrides,
+ 			newTaskClineSettings,
+ 			newTaskImages,
+ 			newTaskStartInPlanMode,
+@@ -481,9 +539,11 @@ export function useTaskEditor({
+ 		setEditTaskBranchRef("");
+ 		setEditTaskAgentId(undefined);
+ 		setEditTaskClineSettings(undefined);
++		setEditTaskOverrides(undefined);
+ 		setNewTaskImages([]);
+ 		setNewTaskAgentId(undefined);
+ 		setNewTaskClineSettings(undefined);
++		setNewTaskOverrides(undefined);
+ 	}, []);
+ 
+ 	return {
+@@ -503,7 +563,9 @@ export function useTaskEditor({
+ 		setNewTaskBranchRef,
+ 		newTaskAgentId,
+ 		setNewTaskAgentId,
++		newTaskOverrides,
+ 		newTaskClineSettings,
++		setNewTaskOverrides,
+ 		setNewTaskClineSettings,
+ 		editingTaskId,
+ 		editTaskPrompt,
+@@ -521,7 +583,9 @@ export function useTaskEditor({
+ 		setEditTaskBranchRef,
+ 		editTaskAgentId,
+ 		setEditTaskAgentId,
++		editTaskOverrides,
+ 		editTaskClineSettings,
++		setEditTaskOverrides,
+ 		setEditTaskClineSettings,
+ 		handleOpenCreateTask,
+ 		handleCancelCreateTask,
+@@ -530,6 +594,7 @@ export function useTaskEditor({
+ 		handleSaveEditedTask,
+ 		handleSaveAndStartEditedTask,
+ 		handleSaveTaskTitle,
++		handleSaveTaskLabels,
+ 		handleCreateTask,
+ 		handleCreateTasks,
+ 		resetTaskEditorState,
+diff --git a/web-ui/src/hooks/use-task-sessions.ts b/web-ui/src/hooks/use-task-sessions.ts
+index d3752286dab32ad97b627ebcd1487106800dc5a8..43b1628831c227e3f40819a3096455b9a2bb4771 100644
+--- a/web-ui/src/hooks/use-task-sessions.ts
++++ b/web-ui/src/hooks/use-task-sessions.ts
+@@ -166,6 +166,7 @@ export function useTaskSessions({ currentProjectId, setSessions }: UseTaskSessio
+ 					rows: geometry.rows,
+ 					agentId: task.agentId,
+ 					clineSettings: task.clineSettings,
++					taskOverrides: task.taskOverrides,
+ 				});
+ 				if (!payload.ok || !payload.summary) {
+ 					return {
+diff --git a/web-ui/src/state/board-state.ts b/web-ui/src/state/board-state.ts
+index fa44cbb3d87ca0aebf214c1b9618c0075b39e62c..98923ed02c4444b034486d2b2d7b8ad0b5ab4883 100644
+--- a/web-ui/src/state/board-state.ts
++++ b/web-ui/src/state/board-state.ts
+@@ -3,7 +3,12 @@ import { createShortTaskId } from "@runtime-task-id";
+ import * as runtimeTaskState from "@runtime-task-state";
+ 
+ import { createInitialBoardData } from "@/data/board-data";
+-import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
++import type {
++	RuntimeAgentId,
++	RuntimeClineReasoningEffort,
++	RuntimeTaskClineSettings,
++	TaskOverrides,
++} from "@/runtime/types";
+ import { isAllowedCrossColumnCardMove, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
+ import {
+ 	type BoardCard,
+@@ -27,6 +32,7 @@ export interface TaskDraft {
+ 	images?: TaskImage[];
+ 	agentId?: RuntimeAgentId;
+ 	clineSettings?: RuntimeTaskClineSettings;
++	taskOverrides?: TaskOverrides;
+ 	baseRef: string;
+ }
+ 
+@@ -159,6 +165,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
+ 		baseRef?: unknown;
+ 		agentId?: unknown;
+ 		clineSettings?: unknown;
++		taskOverrides?: TaskOverrides;
+ 		clineProviderId?: unknown;
+ 		clineModelId?: unknown;
+ 		clineReasoningEffort?: unknown;
+@@ -189,6 +196,9 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
+ 	return {
+ 		id: typeof card.id === "string" && card.id ? card.id : createShortTaskId(createBrowserUuid),
+ 		title,
++		taskOverrides: runtimeTaskState.getTaskOverridesError(card.taskOverrides)
++			? undefined
++			: runtimeTaskState.cloneTaskOverrides(card.taskOverrides),
+ 		prompt,
+ 		startInPlanMode: typeof card.startInPlanMode === "boolean" ? card.startInPlanMode : false,
+ 		autoReviewEnabled: typeof card.autoReviewEnabled === "boolean" ? card.autoReviewEnabled : false,
+@@ -346,6 +356,7 @@ export function addTaskToColumnWithResult(
+ 			images: draft.images,
+ 			agentId: draft.agentId,
+ 			clineSettings: draft.clineSettings,
++			taskOverrides: runtimeTaskState.cloneTaskOverrides(draft.taskOverrides),
+ 			baseRef: draft.baseRef,
+ 		},
+ 		createBrowserUuid,
+@@ -544,6 +555,7 @@ export function updateTask(board: BoardData, taskId: string, draft: TaskDraft):
+ 							: undefined,
+ 				agentId: draft.agentId,
+ 				clineSettings: draft.clineSettings,
++				taskOverrides: runtimeTaskState.cloneTaskOverrides(draft.taskOverrides ?? card.taskOverrides),
+ 				baseRef,
+ 				updatedAt: Date.now(),
+ 			};
+diff --git a/web-ui/src/types/board.ts b/web-ui/src/types/board.ts
+index 5c45d42d934802fd3a7b8bbd1fd73ae262378672..70ad9dfc1d4626a8efc6c420049e90e103886ec7 100644
+--- a/web-ui/src/types/board.ts
++++ b/web-ui/src/types/board.ts
+@@ -4,6 +4,7 @@ import type {
+ 	RuntimeTaskAutoReviewMode,
+ 	RuntimeTaskClineSettings,
+ 	RuntimeTaskImage,
++	TaskOverrides,
+ } from "@/runtime/types";
+ 
+ export type BoardColumnId = RuntimeBoardColumnId;
+@@ -46,6 +47,7 @@ export interface BoardCard {
+ 	images?: TaskImage[];
+ 	agentId?: RuntimeAgentId;
+ 	clineSettings?: RuntimeTaskClineSettings;
++	taskOverrides?: TaskOverrides;
+ 	baseRef: string;
+ 	createdAt: number;
+ 	updatedAt: number;
+diff --git a/src/commands/hook-events/claude-model.ts b/src/commands/hook-events/claude-model.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7861c7c9b8b259b1716598d126857fe78ffe815
+--- /dev/null
++++ b/src/commands/hook-events/claude-model.ts
+@@ -0,0 +1,45 @@
++import { open } from "node:fs/promises";
++import type { RuntimeTaskHookActivity } from "../../core/api-contract";
++import { asRecord, readStringField } from "./hook-utils";
++
++export function resolveClaudeTranscriptModel(text: string): string | null {
++	const lines = text.split(/\r?\n/);
++	for (let index = lines.length - 1; index >= 0; index--) {
++		try {
++			const entry = asRecord(JSON.parse(lines[index]));
++			if (!entry || entry.type !== "assistant" || entry.isSidechain === true) continue;
++			const message = asRecord(entry.message);
++			const model = message ? readStringField(message, "model") : null;
++			if (model && model !== "<synthetic>") return model;
++		} catch {
++			/* The first/last line of a transcript tail may be incomplete. */
++		}
++	}
++	return null;
++}
++
++export async function enrichClaudeModelMetadata<
++	T extends {
++		payload?: Record<string, unknown> | null;
++		metadata?: Partial<RuntimeTaskHookActivity>;
++	},
++>(args: T): Promise<T> {
++	if (args.metadata?.source !== "claude" || !args.payload) return args;
++	const path = readStringField(args.payload, "transcript_path");
++	if (!path) return args;
++	let file: Awaited<ReturnType<typeof open>> | undefined;
++	try {
++		file = await open(path, "r");
++		const stat = await file.stat();
++		if (!stat.isFile()) return args;
++		const bytes = Math.min(stat.size, 1024 * 1024);
++		const buffer = Buffer.alloc(bytes);
++		const { bytesRead } = await file.read(buffer, 0, bytes, stat.size - bytes);
++		const modelId = resolveClaudeTranscriptModel(buffer.subarray(0, bytesRead).toString("utf8"));
++		return modelId ? { ...args, metadata: { ...args.metadata, modelId } } : args;
++	} catch {
++		return args;
++	} finally {
++		await file?.close();
++	}
++}
+diff --git a/src/core/task-overrides.ts b/src/core/task-overrides.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ab032b79570fa8f4efe08af9b748fda464ce839
+--- /dev/null
++++ b/src/core/task-overrides.ts
+@@ -0,0 +1,43 @@
++import { z } from "zod";
++
++export const taskOverridesSchema = z.object({
++	labels: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
++	cliModel: z
++		.string()
++		.trim()
++		.max(200)
++		.refine((value) => !/[\r\n\0]/.test(value), "Invalid model ID")
++		.optional(),
++	environment: z
++		.object({
++			enabled: z.boolean(),
++			variables: z
++				.array(
++					z.object({
++						name: z
++							.string()
++							.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use a valid environment variable name")
++							.refine((name) => !/^KANBAN_/i.test(name), "KANBAN_ variables are reserved"),
++						value: z.string().refine((value) => !value.includes("\0"), "Environment values cannot contain NUL"),
++					}),
++				)
++				.max(100)
++				.refine(
++					(variables) => new Set(variables.map(({ name }) => name.toUpperCase())).size === variables.length,
++					"Environment variable names must be unique",
++				),
++		})
++		.optional(),
++});
++
++export type TaskOverrides = z.infer<typeof taskOverridesSchema>;
++
++export function cloneTaskOverrides(value: TaskOverrides | undefined): TaskOverrides | undefined {
++	return value === undefined ? undefined : taskOverridesSchema.parse(value);
++}
++
++export function getTaskOverridesError(value: TaskOverrides | undefined): string | null {
++	if (value === undefined) return null;
++	const result = taskOverridesSchema.safeParse(value);
++	return result.success ? null : (result.error.issues[0]?.message ?? "Invalid task settings");
++}
+diff --git a/src/terminal/task-launch-overrides.ts b/src/terminal/task-launch-overrides.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..90797eb54027bd734c514f90306c23351db84940
+--- /dev/null
++++ b/src/terminal/task-launch-overrides.ts
+@@ -0,0 +1,37 @@
++import type { RuntimeAgentId } from "../core/api-contract";
++import { type TaskOverrides, taskOverridesSchema } from "../core/task-overrides";
++
++/** Keep launch overrides in argv/env; never interpolate them into shell commands. */
++export function resolveTaskLaunchOverrides(agentId: RuntimeAgentId, args: string[], overrides?: TaskOverrides) {
++	const settings = overrides === undefined ? undefined : taskOverridesSchema.parse(overrides);
++	const cliModel = settings?.cliModel?.trim();
++	const supportsModel = agentId === "codex" || agentId === "claude";
++	const nextArgs: string[] = [];
++	for (let index = 0; index < args.length; index++) {
++		const arg = args[index];
++		if (supportsModel && cliModel) {
++			if (arg === "--model" || arg === "-m") {
++				index++;
++				continue;
++			}
++			if (arg.startsWith("--model=") || arg.startsWith("-m=")) continue;
++		}
++		nextArgs.push(arg);
++	}
++	if (supportsModel && cliModel) nextArgs.unshift("--model", cliModel);
++	const environment =
++		agentId !== "cline" && settings?.environment?.enabled
++			? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
++			: undefined;
++	let modelId: string | null = null;
++	if (supportsModel) {
++		for (let index = 0; index < nextArgs.length; index++) {
++			const arg = nextArgs[index];
++			if (arg === "--model" || arg === "-m") modelId = nextArgs[++index] ?? null;
++			else if (arg.startsWith("--model=") || arg.startsWith("-m=")) modelId = arg.slice(arg.indexOf("=") + 1);
++		}
++		if (!modelId && agentId === "claude")
++			modelId = environment?.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? null;
++	}
++	return { args: nextArgs, env: environment, modelId };
++}
+diff --git a/test/runtime/hooks-claude-model.test.ts b/test/runtime/hooks-claude-model.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e4b6eda1cb3f7ffc37f165089a4c8f3ae1badf3
+--- /dev/null
++++ b/test/runtime/hooks-claude-model.test.ts
+@@ -0,0 +1,35 @@
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import { enrichClaudeModelMetadata, resolveClaudeTranscriptModel } from "../../src/commands/hook-events/claude-model";
++
++describe("Claude model reporting", () => {
++	it("finds the latest main-session model across model changes and incomplete transcript lines", () => {
++		const lines = [
++			JSON.stringify({ type: "assistant", message: { model: "first-model" } }),
++			JSON.stringify({ type: "assistant", message: { model: "second-model" } }),
++			JSON.stringify({ type: "assistant", isSidechain: true, message: { model: "subagent-model" } }),
++			JSON.stringify({ type: "assistant", message: { model: "<synthetic>" } }),
++			'{"incomplete":',
++		];
++		expect(resolveClaudeTranscriptModel(lines.join("\n"))).toBe("second-model");
++		expect(resolveClaudeTranscriptModel("unrelated output")).toBeNull();
++	});
++
++	it("enriches hook metadata from the transcript and tolerates missing transcripts", async () => {
++		const dir = await mkdtemp(join(tmpdir(), "kanban-claude-model-"));
++		try {
++			const path = join(dir, "session.jsonl");
++			const args = { payload: { transcript_path: path }, metadata: { source: "claude", activityText: "Working" } };
++			expect(await enrichClaudeModelMetadata(args)).toEqual(args);
++			await writeFile(path, JSON.stringify({ type: "assistant", message: { model: "reported-model" } }));
++			expect(await enrichClaudeModelMetadata(args)).toEqual({
++				...args,
++				metadata: { ...args.metadata, modelId: "reported-model" },
++			});
++		} finally {
++			await rm(dir, { recursive: true, force: true });
++		}
++	});
++});
+diff --git a/test/runtime/task-overrides.test.ts b/test/runtime/task-overrides.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e5e715a1f5d661dc204cc3b02d9720a3f892e74
+--- /dev/null
++++ b/test/runtime/task-overrides.test.ts
+@@ -0,0 +1,79 @@
++import { describe, expect, it } from "vitest";
++import { runtimeBoardCardSchema, runtimeTaskSessionStartRequestSchema } from "../../src/core/api-contract";
++import { addTaskToColumn, updateTask } from "../../src/core/task-board-mutations";
++import { taskOverridesSchema } from "../../src/core/task-overrides";
++import { resolveTaskLaunchOverrides } from "../../src/terminal/task-launch-overrides";
++
++describe("task overrides", () => {
++	const settings = {
++		labels: ["backend"],
++		cliModel: "custom-model",
++		environment: { enabled: true, variables: [{ name: "API_TOKEN", value: "spaces $literal `text`=value" }] },
++	};
++
++	it("persists overrides across API validation and unrelated task edits without sharing mutable state", () => {
++		const created = addTaskToColumn(
++			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },
++			"backlog",
++			{ prompt: "Implement", baseRef: "main", taskOverrides: settings },
++			() => "task-1",
++		);
++		const restored = runtimeBoardCardSchema.parse(JSON.parse(JSON.stringify(created.task)));
++		expect(restored.taskOverrides).toEqual(settings);
++		expect(created.task.taskOverrides?.environment).not.toBe(settings.environment);
++		const edited = updateTask(created.board, created.task.id, {
++			title: "Renamed",
++			prompt: "Implement",
++			baseRef: "main",
++		});
++		expect(edited.task?.taskOverrides).toEqual(settings);
++		const start = runtimeTaskSessionStartRequestSchema.parse({
++			taskId: created.task.id,
++			prompt: "Implement",
++			baseRef: "main",
++			taskOverrides: restored.taskOverrides,
++		});
++		expect(resolveTaskLaunchOverrides("codex", ["--model=old", "--profile", "work"], start.taskOverrides)).toEqual({
++			args: ["--model", "custom-model", "--profile", "work"],
++			env: { API_TOKEN: "spaces $literal `text`=value" },
++			modelId: "custom-model",
++		});
++	});
++
++	it.each(["codex", "claude"] as const)(
++		"passes enabled env literally to %s and does not mutate parent env or args",
++		(agentId) => {
++			const original = process.env.API_TOKEN;
++			const args = ["-m", "old", "--verbose"];
++			const launch = resolveTaskLaunchOverrides(agentId, args, settings);
++			expect(launch.env?.API_TOKEN).toBe(settings.environment.variables[0].value);
++			expect(args).toEqual(["-m", "old", "--verbose"]);
++			expect(process.env.API_TOKEN).toBe(original);
++			expect(
++				resolveTaskLaunchOverrides(agentId, [], {
++					...settings,
++					environment: { ...settings.environment, enabled: false },
++				}).env,
++			).toBeUndefined();
++			expect(resolveTaskLaunchOverrides(agentId, []).env).toBeUndefined();
++		},
++	);
++
++	it("does not apply CLI settings to the native Cline SDK", () => {
++		expect(resolveTaskLaunchOverrides("cline", [], settings)).toEqual({ args: [], env: undefined, modelId: null });
++	});
++
++	it.each([
++		{ variables: [{ name: "BAD=NAME", value: "x" }] },
++		{ variables: [{ name: "KANBAN_TASK_ID", value: "other-task" }] },
++		{ variables: [{ name: "TOKEN", value: "x\0y" }] },
++		{
++			variables: [
++				{ name: "TOKEN", value: "one" },
++				{ name: "TOKEN", value: "two" },
++			],
++		},
++	])("rejects invalid or ambiguous environment variables", ({ variables }) => {
++		expect(taskOverridesSchema.safeParse({ environment: { enabled: true, variables } }).success).toBe(false);
++	});
++});
+diff --git a/web-ui/src/components/task-labels-editor.tsx b/web-ui/src/components/task-labels-editor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..a697f094deb92047862650df403ded3bd2379607
+--- /dev/null
++++ b/web-ui/src/components/task-labels-editor.tsx
+@@ -0,0 +1,68 @@
++import { Plus, X } from "lucide-react";
++import { useId, useState } from "react";
++import { Button } from "@/components/ui/button";
++
++export function TaskLabelsEditor({
++	labels = [],
++	onChange,
++}: {
++	labels?: string[];
++	onChange: (labels: string[]) => void;
++}) {
++	const id = useId();
++	const [draft, setDraft] = useState("");
++	const addLabel = () => {
++		const label = draft.trim();
++		if (!label || labels.includes(label) || labels.length >= 20) return;
++		onChange([...labels, label]);
++		setDraft("");
++	};
++	return (
++		<div className="space-y-2">
++			<label htmlFor={id} className="text-xs text-text-secondary">
++				Labels
++			</label>
++			<div className="flex flex-wrap gap-1">
++				{labels.map((label) => (
++					<span
++						key={label}
++						className="inline-flex items-center gap-1 rounded-sm bg-surface-3 px-2 py-1 text-xs text-text-primary"
++					>
++						{label}
++						<button
++							type="button"
++							aria-label={`Remove label ${label}`}
++							onClick={() => onChange(labels.filter((item) => item !== label))}
++						>
++							<X size={12} />
++						</button>
++					</span>
++				))}
++			</div>
++			<div className="flex gap-1">
++				<input
++					id={id}
++					value={draft}
++					maxLength={40}
++					placeholder="Add a label"
++					className="min-w-0 flex-1 rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
++					onChange={(event) => setDraft(event.target.value)}
++					onKeyDown={(event) => {
++						if (event.key === "Enter") {
++							event.preventDefault();
++							event.stopPropagation();
++							addLabel();
++						}
++					}}
++				/>
++				<Button
++					size="sm"
++					icon={<Plus size={14} />}
++					aria-label="Add label"
++					onClick={addLabel}
++					disabled={!draft.trim() || labels.includes(draft.trim()) || labels.length >= 20}
++				/>
++			</div>
++		</div>
++	);
++}
+diff --git a/web-ui/src/components/task-overrides-editor.tsx b/web-ui/src/components/task-overrides-editor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..7abe331599762a8e405d4ac030903707064477a2
+--- /dev/null
++++ b/web-ui/src/components/task-overrides-editor.tsx
+@@ -0,0 +1,129 @@
++import * as Switch from "@radix-ui/react-switch";
++import { getTaskOverridesError } from "@runtime-task-state";
++import { Plus, X } from "lucide-react";
++import { useId, useState } from "react";
++import { TaskLabelsEditor } from "@/components/task-labels-editor";
++import { Button } from "@/components/ui/button";
++import type { RuntimeAgentId, TaskOverrides } from "@/runtime/types";
++
++export function TaskOverridesEditor({
++	value = {},
++	onChange,
++	agentId,
++}: {
++	value?: TaskOverrides;
++	onChange: (value: TaskOverrides) => void;
++	agentId?: RuntimeAgentId | null;
++}) {
++	const id = useId();
++	const [showValues, setShowValues] = useState(false);
++	const environment = value.environment ?? { enabled: false, variables: [] };
++	const error = getTaskOverridesError(value);
++	const updateVariables = (variables: typeof environment.variables) =>
++		onChange({ ...value, environment: { ...environment, variables } });
++	return (
++		<div className="mt-3 space-y-3 border-t border-border pt-3">
++			<TaskLabelsEditor labels={value.labels} onChange={(labels) => onChange({ ...value, labels })} />
++			{agentId === "codex" || agentId === "claude" ? (
++				<div className="space-y-1">
++					<label htmlFor={`${id}-model`} className="block text-xs text-text-secondary">
++						CLI model
++					</label>
++					<input
++						id={`${id}-model`}
++						value={value.cliModel ?? ""}
++						maxLength={200}
++						placeholder="Use CLI default"
++						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
++						onChange={(event) => onChange({ ...value, cliModel: event.target.value })}
++					/>
++					<p className="text-xs text-text-tertiary">Optional model ID passed to {agentId} with --model.</p>
++				</div>
++			) : null}
++			{agentId && agentId !== "cline" ? (
++				<div className="space-y-2">
++					<div className="flex items-center gap-2">
++						<Switch.Root
++							id={`${id}-env`}
++							checked={environment.enabled}
++							onCheckedChange={(enabled) => onChange({ ...value, environment: { ...environment, enabled } })}
++							className="h-4 w-7 rounded-full bg-surface-4 data-[state=checked]:bg-accent"
++						>
++							<Switch.Thumb className="block size-3 translate-x-0.5 rounded-full bg-text-primary transition-transform data-[state=checked]:translate-x-3.5" />
++						</Switch.Root>
++						<label htmlFor={`${id}-env`} className="text-xs text-text-primary">
++							Use extra environment variables
++						</label>
++					</div>
++					{environment.enabled || environment.variables.length > 0 ? (
++						<>
++							<p className="text-xs text-text-tertiary">
++								Values are saved with this task, unencrypted. They override inherited variables for this CLI
++								only. Enter literal values without shell quotes.
++							</p>
++							{environment.variables.map((variable, index) => (
++								<div key={index} className="flex gap-1">
++									<input
++										aria-label={`Variable name ${index + 1}`}
++										placeholder="NAME"
++										value={variable.name}
++										autoComplete="off"
++										spellCheck={false}
++										className="w-2/5 min-w-0 rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
++										onChange={(event) =>
++											updateVariables(
++												environment.variables.map((item, i) =>
++													i === index ? { ...item, name: event.target.value } : item,
++												),
++											)
++										}
++									/>
++									<input
++										aria-label={`Variable value ${index + 1}`}
++										placeholder="Value"
++										type={showValues ? "text" : "password"}
++										value={variable.value}
++										autoComplete="off"
++										className="min-w-0 flex-1 rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
++										onChange={(event) =>
++											updateVariables(
++												environment.variables.map((item, i) =>
++													i === index ? { ...item, value: event.target.value } : item,
++												),
++											)
++										}
++									/>
++									<Button
++										size="sm"
++										variant="ghost"
++										icon={<X size={14} />}
++										aria-label={`Remove variable ${index + 1}`}
++										onClick={() => updateVariables(environment.variables.filter((_, i) => i !== index))}
++									/>
++								</div>
++							))}
++							<div className="flex gap-2">
++								<Button
++									size="sm"
++									icon={<Plus size={14} />}
++									onClick={() => updateVariables([...environment.variables, { name: "", value: "" }])}
++									disabled={environment.variables.length >= 100}
++								>
++									Add variable
++								</Button>
++								<Button size="sm" variant="ghost" onClick={() => setShowValues(!showValues)}>
++									{showValues ? "Hide values" : "Show values"}
++								</Button>
++							</div>
++						</>
++					) : null}
++				</div>
++			) : null}
++			{error ? (
++				<p role="alert" className="text-xs text-status-red">
++					{error}
++				</p>
++			) : null}
++		</div>
++	);
++}

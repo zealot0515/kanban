@@ -9,6 +9,7 @@ import { buildKanbanRuntimeUrl, getRuntimeFetch } from "../core/runtime-endpoint
 import { buildWindowsCmdArgsArray, resolveWindowsComSpec, shouldUseWindowsCmdLaunch } from "../core/windows-cmd-launch";
 import { parseHookRuntimeContextFromEnv } from "../terminal/hook-runtime-context";
 import type { RuntimeAppRouter } from "../trpc/app-router";
+import { enrichClaudeModelMetadata } from "./hook-events/claude-model";
 import {
 	type CodexMappedHookEvent,
 	resolveCodexRolloutFinalMessageForCwd,
@@ -337,6 +338,9 @@ function normalizeHookMetadata(
 
 	const activityText = inferActivityText(event, payload, toolName, finalMessage, notificationType);
 	const merged: Partial<RuntimeTaskHookActivity> = {
+		modelId:
+			flagMetadata.modelId ??
+			(payload ? (readStringField(payload, "modelId") ?? readStringField(payload, "model")) : null),
 		source: flagMetadata.source ?? inferredSource ?? null,
 		hookEventName: flagMetadata.hookEventName ?? hookEventName ?? null,
 		toolName: flagMetadata.toolName ?? toolName ?? null,
@@ -421,6 +425,9 @@ function appendMetadataFlags(args: string[], metadata?: Partial<RuntimeTaskHookA
 	if (!metadata) {
 		return args;
 	}
+	if (metadata.modelId) {
+		args.push("--metadata-base64", Buffer.from(JSON.stringify(metadata)).toString("base64"));
+	}
 	if (metadata.source) {
 		args.push("--source", metadata.source);
 	}
@@ -499,7 +506,7 @@ async function runHooksNotify(
 		const stdinPayload = await readStdinText();
 		const parsedArgs = parseHooksIngestArgs(event, options, payloadArg, stdinPayload);
 		const codexEnrichedArgs = await enrichCodexReviewMetadata(parsedArgs, process.cwd());
-		const args = await enrichDroidReviewMetadata(codexEnrichedArgs);
+		const args = await enrichClaudeModelMetadata(await enrichDroidReviewMetadata(codexEnrichedArgs));
 		await ingestHookEvent(args);
 	} catch {
 		// Best effort only.

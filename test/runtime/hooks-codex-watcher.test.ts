@@ -114,6 +114,51 @@ describe("startCodexSessionWatcher", () => {
 		]);
 	});
 
+	it("reports model changes from the active rollout", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "kanban-model-watcher-"));
+		const sessionsRoot = join(tempDir, "sessions");
+		const events: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+		const stop = await startCodexSessionWatcher(
+			join(tempDir, "session.jsonl"),
+			(event) => events.push(event),
+			60000,
+			{ cwd: "/tmp/model-task", sessionsRoot, rolloutPollIntervalMs: 0 },
+		);
+		try {
+			await mkdir(sessionsRoot, { recursive: true });
+			await writeFile(
+				join(sessionsRoot, "rollout-model.jsonl"),
+				[
+					{ type: "session_meta", payload: { cwd: "/tmp/model-task" } },
+					{ type: "turn_context", payload: { model: "first-model" } },
+					{ type: "turn_context", payload: { model: "second-model" } },
+				]
+					.map((line) => `${JSON.stringify(line)}\n`)
+					.join(""),
+			);
+			await writeFile(
+				join(sessionsRoot, "rollout-zz-subagent.jsonl"),
+				[
+					{
+						type: "session_meta",
+						payload: {
+							cwd: "/tmp/model-task",
+							source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } },
+						},
+					},
+					{ type: "turn_context", payload: { model: "child-model" } },
+				]
+					.map((line) => `${JSON.stringify(line)}\n`)
+					.join(""),
+			);
+			await stop();
+			expect(events.map((event) => event.metadata?.modelId)).toEqual(["first-model", "second-model"]);
+		} finally {
+			await stop();
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("emits in-progress activity from rollout events when tui logs are low-signal", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "kanban-codex-watcher-"));
 		const logPath = join(tempDir, "session.jsonl");

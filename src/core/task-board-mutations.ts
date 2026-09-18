@@ -9,7 +9,10 @@ import type {
 	RuntimeTaskImage,
 } from "./api-contract";
 import { createUniqueTaskId } from "./task-id";
+import { cloneTaskOverrides, type TaskOverrides } from "./task-overrides";
 import { resolveTaskTitle } from "./task-title";
+
+export { cloneTaskOverrides, getTaskOverridesError } from "./task-overrides";
 
 export interface RuntimeCreateTaskInput {
 	taskId?: string;
@@ -21,6 +24,7 @@ export interface RuntimeCreateTaskInput {
 	images?: RuntimeTaskImage[];
 	agentId?: RuntimeAgentId;
 	clineSettings?: RuntimeTaskClineSettings;
+	taskOverrides?: TaskOverrides;
 	baseRef: string;
 }
 
@@ -33,6 +37,7 @@ export interface RuntimeUpdateTaskInput {
 	images?: RuntimeTaskImage[];
 	agentId?: RuntimeAgentId | null;
 	clineSettings?: RuntimeTaskClineSettings | null;
+	taskOverrides?: TaskOverrides;
 	baseRef: string;
 }
 
@@ -307,6 +312,7 @@ export function addTaskToColumn(
 		autoReviewEnabled: Boolean(input.autoReviewEnabled),
 		autoReviewMode: normalizeTaskAutoReviewMode(input.autoReviewMode),
 		images: cloneTaskImages(input.images),
+		taskOverrides: cloneTaskOverrides(input.taskOverrides),
 		...(input.agentId ? { agentId: input.agentId } : {}),
 		...(input.clineSettings !== undefined ? { clineSettings: cloneTaskClineSettings(input.clineSettings) } : {}),
 		baseRef,
@@ -623,6 +629,7 @@ export function updateTask(
 				autoReviewEnabled: Boolean(input.autoReviewEnabled),
 				autoReviewMode: normalizeTaskAutoReviewMode(input.autoReviewMode),
 				images: input.images === undefined ? card.images : cloneTaskImages(input.images),
+				taskOverrides: cloneTaskOverrides(input.taskOverrides ?? card.taskOverrides),
 				agentId: input.agentId === undefined ? card.agentId : (input.agentId ?? undefined),
 				clineSettings:
 					input.clineSettings === undefined

@@ -327,6 +327,7 @@ export function CardDetailView({
 	inlineTaskEditor,
 	onEditTask,
 	onSaveTaskTitle,
+	onSaveTaskLabels,
 	onCommitTask,
 	onOpenPrTask,
 	onAgentCommitTask,
@@ -385,6 +386,7 @@ export function CardDetailView({
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCard) => void;
 	onSaveTaskTitle?: (taskId: string, title: string) => void;
+	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onAgentCommitTask?: (taskId: string) => void;
@@ -812,7 +814,9 @@ export function CardDetailView({
 							editingTaskId={editingTaskId}
 							inlineTaskEditor={inlineTaskEditor}
 							onEditTask={onEditTask}
+							defaultAgentId={runtimeConfig?.selectedAgentId}
 							onSaveTaskTitle={onSaveTaskTitle}
+							onSaveTaskLabels={onSaveTaskLabels}
 							onCommitTask={onCommitTask}
 							onOpenPrTask={onOpenPrTask}
 							onMoveToTrashTask={onMoveReviewCardToTrash}

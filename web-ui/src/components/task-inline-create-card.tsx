@@ -3,13 +3,18 @@ import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
 import { ArrowBigUp, Check, Command, CornerDownLeft } from "lucide-react";
 import { type Dispatch, type ReactElement, type SetStateAction, useCallback, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-
 import { BranchSelectDropdown, type BranchSelectOption } from "@/components/branch-select-dropdown";
 import { TaskAgentModelPicker, useTaskAgentModelPicker } from "@/components/task-agent-model-picker";
+import { TaskOverridesEditor } from "@/components/task-overrides-editor";
 import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
-import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
+import type {
+	RuntimeAgentId,
+	RuntimeClineReasoningEffort,
+	RuntimeTaskClineSettings,
+	TaskOverrides,
+} from "@/runtime/types";
 import type { TaskAutoReviewMode, TaskImage } from "@/types";
 import { pasteShortcutLabel } from "@/utils/platform";
 import { useDocumentEvent, useMeasure } from "@/utils/react-use";
@@ -69,6 +74,8 @@ export function TaskInlineCreateCard({
 	idPrefix = "inline-task",
 	agentId,
 	onAgentIdChange,
+	taskOverrides,
+	onTaskOverridesChange,
 	clineSettings,
 	onClineSettingsChange,
 	defaultAgentId,
@@ -101,6 +108,8 @@ export function TaskInlineCreateCard({
 	idPrefix?: string;
 	agentId?: RuntimeAgentId | undefined;
 	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
+	taskOverrides?: TaskOverrides;
+	onTaskOverridesChange?: (value: TaskOverrides) => void;
 	clineSettings?: RuntimeTaskClineSettings | undefined;
 	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
 	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
@@ -330,6 +339,13 @@ export function TaskInlineCreateCard({
 				) : null}
 			</div>
 
+			{onTaskOverridesChange ? (
+				<TaskOverridesEditor
+					value={taskOverrides}
+					onChange={onTaskOverridesChange}
+					agentId={agentId ?? defaultAgentId}
+				/>
+			) : null}
 			<div className={`flex gap-2 mt-3 ${mode === "edit" ? "justify-end" : "justify-between"}`}>
 				{mode === "create" && onCancel ? (
 					<Button variant="default" size="sm" className="whitespace-nowrap" onClick={onCancel}>

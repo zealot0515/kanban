@@ -1,7 +1,6 @@
 import * as RadixCheckbox from "@radix-ui/react-checkbox";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as RadixSwitch from "@radix-ui/react-switch";
-
 import {
 	ArrowBigUp,
 	ArrowLeft,
@@ -18,15 +17,20 @@ import {
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-
 import type { BranchSelectOption } from "@/components/branch-select-dropdown";
 import { BranchSelectDropdown } from "@/components/branch-select-dropdown";
 import { TaskAgentModelPicker, useTaskAgentModelPicker } from "@/components/task-agent-model-picker";
+import { TaskOverridesEditor } from "@/components/task-overrides-editor";
 import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import { NativeSelect } from "@/components/ui/native-select";
-import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
+import type {
+	RuntimeAgentId,
+	RuntimeClineReasoningEffort,
+	RuntimeTaskClineSettings,
+	TaskOverrides,
+} from "@/runtime/types";
 import { LocalStorageKey } from "@/storage/local-storage-store";
 import type { TaskAutoReviewMode, TaskImage } from "@/types";
 import { isMacPlatform, pasteShortcutLabel } from "@/utils/platform";
@@ -120,6 +124,8 @@ export function TaskCreateDialog({
 	onBranchRefChange,
 	agentId,
 	onAgentIdChange,
+	taskOverrides,
+	onTaskOverridesChange,
 	clineSettings,
 	onClineSettingsChange,
 	defaultAgentId,
@@ -151,6 +157,8 @@ export function TaskCreateDialog({
 	onBranchRefChange: (value: string) => void;
 	agentId?: RuntimeAgentId | undefined;
 	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
+	taskOverrides?: TaskOverrides;
+	onTaskOverridesChange?: (value: TaskOverrides) => void;
 	clineSettings?: RuntimeTaskClineSettings | undefined;
 	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
 	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
@@ -596,6 +604,13 @@ export function TaskCreateDialog({
 						/>
 					) : null}
 				</div>
+				{onTaskOverridesChange ? (
+					<TaskOverridesEditor
+						value={taskOverrides}
+						onChange={onTaskOverridesChange}
+						agentId={agentId ?? defaultAgentId}
+					/>
+				) : null}
 			</DialogBody>
 			<DialogFooter>
 				<label

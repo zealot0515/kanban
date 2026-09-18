@@ -180,6 +180,44 @@ describe("BoardCard", () => {
 		}
 	});
 
+	it("shows the running CLI model and lets Done cards edit labels", async () => {
+		const onSaveLabels = vi.fn();
+		await act(async () => {
+			root.render(
+				<TooltipProvider>
+					<BoardCard
+						card={createCard({
+							agentId: "codex",
+							taskOverrides: { cliModel: "configured-model", labels: ["backend"] },
+						})}
+						index={0}
+						columnId="trash"
+						sessionSummary={createSummary("awaiting_review", { agentId: "codex", modelId: "reported-model" })}
+						onSaveLabels={onSaveLabels}
+					/>
+				</TooltipProvider>,
+			);
+		});
+		expect(container.textContent).toContain("reported-model");
+		expect(container.textContent).not.toContain("configured-model");
+		expect(container.textContent).toContain("backend");
+		await act(async () => {
+			(container.querySelector('button[aria-label="Edit labels"]') as HTMLButtonElement).click();
+		});
+		await act(async () => {
+			(container.querySelector('button[aria-label="Remove label backend"]') as HTMLButtonElement).click();
+		});
+		expect(onSaveLabels).toHaveBeenCalledWith("task-1", []);
+	});
+
+	it("shows an honest model fallback for CLI defaults", async () => {
+		await act(async () => {
+			root.render(<BoardCard card={createCard()} index={0} columnId="backlog" defaultAgentId="claude" />);
+		});
+		expect(container.textContent).toContain("Claude Code");
+		expect(container.textContent).toContain("CLI default (not reported)");
+	});
+
 	it("shows a mode-specific cancel button and hides it after canceling auto review", async () => {
 		await act(async () => {
 			root.render(<Harness />);

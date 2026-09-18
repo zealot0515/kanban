@@ -1,11 +1,10 @@
 import { Droppable } from "@hello-pangea/dnd";
 import { Play, Plus, Trash2 } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-
 import { BoardCard } from "@/components/board-card";
 import { Button } from "@/components/ui/button";
 import { ColumnIndicator } from "@/components/ui/column-indicator";
-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
+import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
 import { isCardDropDisabled, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
 import type { BoardCard as BoardCardModel, BoardColumnId, BoardColumn as BoardColumnModel } from "@/types";
 
@@ -20,6 +19,7 @@ export function BoardColumn({
 	inlineTaskEditor,
 	onEditTask,
 	onSaveTitle,
+	onSaveLabels,
 	onCommitTask,
 	onOpenPrTask,
 	onCancelAutomaticTaskAction,
@@ -38,6 +38,7 @@ export function BoardColumn({
 	dependencyTargetTaskId,
 	isDependencyLinking,
 	workspacePath,
+	defaultAgentId,
 	defaultClineModelId,
 }: {
 	column: BoardColumnModel;
@@ -50,6 +51,7 @@ export function BoardColumn({
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
 	onSaveTitle?: (taskId: string, title: string) => void;
+	onSaveLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
 	onCancelAutomaticTaskAction?: (taskId: string) => void;
@@ -68,6 +70,7 @@ export function BoardColumn({
 	dependencyTargetTaskId?: string | null;
 	isDependencyLinking?: boolean;
 	workspacePath?: string | null;
+	defaultAgentId?: RuntimeAgentId | null;
 	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const canCreate = column.id === "backlog" && onCreateTask;
@@ -187,8 +190,10 @@ export function BoardColumn({
 											isDependencyTarget={dependencyTargetTaskId === card.id}
 											isDependencyLinking={isDependencyLinking}
 											workspacePath={workspacePath}
+											defaultAgentId={defaultAgentId}
 											defaultClineModelId={defaultClineModelId}
 											onSaveTitle={onSaveTitle}
+											onSaveLabels={onSaveLabels}
 											onClick={() => {
 												if (column.id === "backlog") {
 													onEditTask?.(card);

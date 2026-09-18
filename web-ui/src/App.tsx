@@ -302,6 +302,8 @@ export default function App(): ReactElement {
 		setNewTaskBranchRef,
 		newTaskAgentId,
 		setNewTaskAgentId,
+		newTaskOverrides,
+		setNewTaskOverrides,
 		newTaskClineSettings,
 		setNewTaskClineSettings,
 		editingTaskId,
@@ -320,6 +322,8 @@ export default function App(): ReactElement {
 		setEditTaskBranchRef,
 		editTaskAgentId,
 		setEditTaskAgentId,
+		editTaskOverrides,
+		setEditTaskOverrides,
 		editTaskClineSettings,
 		setEditTaskClineSettings,
 		handleOpenCreateTask,
@@ -329,6 +333,7 @@ export default function App(): ReactElement {
 		handleSaveEditedTask,
 		handleSaveAndStartEditedTask,
 		handleSaveTaskTitle,
+		handleSaveTaskLabels,
 		handleCreateTask,
 		handleCreateTasks,
 		resetTaskEditorState,
@@ -783,6 +788,8 @@ export default function App(): ReactElement {
 			onBranchRefChange={setEditTaskBranchRef}
 			agentId={editTaskAgentId}
 			onAgentIdChange={setEditTaskAgentId}
+			taskOverrides={editTaskOverrides}
+			onTaskOverridesChange={setEditTaskOverrides}
 			clineSettings={editTaskClineSettings}
 			onClineSettingsChange={setEditTaskClineSettings}
 			defaultAgentId={runtimeProjectConfig?.selectedAgentId ?? null}
@@ -944,6 +951,7 @@ export default function App(): ReactElement {
 												inlineTaskEditor={inlineTaskEditor}
 												onEditTask={handleOpenEditTask}
 												onSaveTaskTitle={handleSaveTaskTitle}
+												onSaveTaskLabels={handleSaveTaskLabels}
 												onCommitTask={handleCommitTask}
 												onOpenPrTask={handleOpenPrTask}
 												onCancelAutomaticTaskAction={handleCancelAutomaticTaskAction}
@@ -959,6 +967,7 @@ export default function App(): ReactElement {
 													selectedCard ? undefined : handleProgrammaticCardMoveReady
 												}
 												onDragEnd={handleDragEnd}
+												defaultAgentId={runtimeProjectConfig?.selectedAgentId}
 												defaultClineModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
 											/>
 										)}
@@ -1029,6 +1038,7 @@ export default function App(): ReactElement {
 										handleOpenEditTask(task, { preserveDetailSelection: true });
 									}}
 									onSaveTaskTitle={handleSaveTaskTitle}
+									onSaveTaskLabels={handleSaveTaskLabels}
 									onCommitTask={handleCommitTask}
 									onOpenPrTask={handleOpenPrTask}
 									onAgentCommitTask={handleAgentCommitTask}
@@ -1131,6 +1141,8 @@ export default function App(): ReactElement {
 					onBranchRefChange={setNewTaskBranchRef}
 					agentId={newTaskAgentId}
 					onAgentIdChange={setNewTaskAgentId}
+					taskOverrides={newTaskOverrides}
+					onTaskOverridesChange={setNewTaskOverrides}
 					clineSettings={newTaskClineSettings}
 					onClineSettingsChange={setNewTaskClineSettings}
 					defaultAgentId={runtimeProjectConfig?.selectedAgentId ?? null}

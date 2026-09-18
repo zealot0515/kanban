@@ -76,6 +76,7 @@ interface SessionEntry {
 }
 
 export interface StartTaskSessionRequest {
+	modelId?: string | null;
 	taskId: string;
 	agentId: AgentAdapterLaunchInput["agentId"];
 	binary: string;
@@ -489,6 +490,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 			const summary = updateSummary(entry, {
 				state: "failed",
 				agentId: request.agentId,
+				modelId: request.modelId ?? null,
 				workspacePath: request.cwd,
 				pid: null,
 				startedAt: null,
@@ -533,6 +535,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		updateSummary(entry, {
 			state: request.resumeFromTrash ? "awaiting_review" : "running",
 			agentId: request.agentId,
+			modelId: request.modelId ?? null,
 			workspacePath: request.cwd,
 			pid: session.pid,
 			startedAt,
@@ -817,6 +820,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		}
 
 		const hasActivityUpdate =
+			typeof activity.modelId === "string" ||
 			typeof activity.activityText === "string" ||
 			typeof activity.toolName === "string" ||
 			typeof activity.toolInputSummary === "string" ||
@@ -830,6 +834,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 
 		const previous = entry.summary.latestHookActivity;
 		const next: RuntimeTaskHookActivity = {
+			modelId: activity.modelId ?? previous?.modelId ?? null,
 			activityText:
 				typeof activity.activityText === "string" ? activity.activityText : (previous?.activityText ?? null),
 			toolName: typeof activity.toolName === "string" ? activity.toolName : (previous?.toolName ?? null),
@@ -849,6 +854,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		};
 
 		const didChange =
+			next.modelId !== (previous?.modelId ?? null) ||
 			next.activityText !== (previous?.activityText ?? null) ||
 			next.toolName !== (previous?.toolName ?? null) ||
 			next.toolInputSummary !== (previous?.toolInputSummary ?? null) ||
@@ -863,6 +869,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		const summary = updateSummary(entry, {
 			lastHookAt: now(),
 			latestHookActivity: next,
+			modelId: activity.modelId?.trim() || entry.summary.modelId,
 		});
 		if (entry.active) {
 			for (const listener of entry.listeners.values()) {

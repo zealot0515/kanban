@@ -266,7 +266,7 @@ function extractRolloutCommandFromPayload(payload: Record<string, unknown>): str
 
 export async function resolveCodexRolloutFinalMessageForCwd(
 	cwd: string,
-	sessionsRoot = join(homedir(), ".codex", "sessions"),
+	sessionsRoot = join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions"),
 ): Promise<string | null> {
 	if (!cwd.trim()) {
 		return null;
@@ -348,6 +348,11 @@ async function findCodexRolloutFileForCwd(
 		} catch {
 			continue;
 		}
+		const metadata = prefix
+			.split(/\r?\n/)
+			.map(parseJsonObject)
+			.find((line) => line?.type === "session_meta");
+		if (isCodexDescendantSession(metadata)) continue;
 		if (prefix.includes(`"cwd":${encodedCwd}`)) {
 			return filePath;
 		}
@@ -364,6 +369,15 @@ function mapCodexRolloutActivityLine(line: string): { mapped: CodexMappedHookEve
 	const lineType = readStringField(parsedLine, "type");
 	if (!lineType) {
 		return null;
+	}
+	if (lineType === "turn_context") {
+		const payload = asRecord(parsedLine.payload);
+		const modelId = payload ? readStringField(payload, "model") : null;
+		if (modelId)
+			return {
+				fingerprint: `rollout:model:${modelId}`,
+				mapped: { event: "activity", metadata: { modelId, source: "codex" } },
+			};
 	}
 	if (lineType === "event_msg") {
 		const payload = asRecord(parsedLine.payload);
@@ -846,7 +860,8 @@ export async function startCodexSessionWatcher(
 ): Promise<() => Promise<void>> {
 	const state = createCodexWatcherState();
 	const watcherCwd = options.cwd?.trim() ?? "";
-	const sessionsRoot = options.sessionsRoot ?? join(homedir(), ".codex", "sessions");
+	const sessionsRoot =
+		options.sessionsRoot ?? join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions");
 	const rolloutPollIntervalMs = options.rolloutPollIntervalMs ?? CODEX_ROLLOUT_POLL_INTERVAL_MS;
 	const watcherStartedAtMs = Date.now();
 	let rolloutLogPath = "";

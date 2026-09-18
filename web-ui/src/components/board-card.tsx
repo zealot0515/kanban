@@ -2,7 +2,7 @@ import { Draggable } from "@hello-pangea/dnd";
 import { getRuntimeAgentCatalogEntry } from "@runtime-agent-catalog";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, AlertTriangle, Bot, GitBranch, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, Bot, GitBranch, Pencil, Play, RotateCcw, Tag, Trash2 } from "lucide-react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -11,11 +11,12 @@ import {
 	formatClineSelectedModelButtonText,
 	resolveClineModelDisplayName,
 } from "@/components/detail-panels/cline-model-picker-options";
+import { TaskLabelsEditor } from "@/components/task-labels-editor";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip } from "@/components/ui/tooltip";
-import type { RuntimeTaskSessionSummary } from "@/runtime/types";
+import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
 import { useTaskWorkspaceSnapshotValue } from "@/stores/workspace-metadata-store";
 import type { BoardCard as BoardCardModel, BoardColumnId } from "@/types";
 import { getTaskAutoReviewCancelButtonLabel } from "@/types";
@@ -221,6 +222,7 @@ export function BoardCard({
 	onMoveToTrash,
 	onRestoreFromTrash,
 	onSaveTitle,
+	onSaveLabels,
 	onCommit,
 	onOpenPr,
 	onCancelAutomaticAction,
@@ -233,6 +235,7 @@ export function BoardCard({
 	isDependencyTarget = false,
 	isDependencyLinking = false,
 	workspacePath,
+	defaultAgentId,
 	defaultClineModelId = null,
 }: {
 	card: BoardCardModel;
@@ -245,6 +248,7 @@ export function BoardCard({
 	onMoveToTrash?: (taskId: string) => void;
 	onRestoreFromTrash?: (taskId: string) => void;
 	onSaveTitle?: (taskId: string, title: string) => void;
+	onSaveLabels?: (taskId: string, labels: string[]) => void;
 	onCommit?: (taskId: string) => void;
 	onOpenPr?: (taskId: string) => void;
 	onCancelAutomaticAction?: (taskId: string) => void;
@@ -257,9 +261,11 @@ export function BoardCard({
 	isDependencyTarget?: boolean;
 	isDependencyLinking?: boolean;
 	workspacePath?: string | null;
+	defaultAgentId?: RuntimeAgentId | null;
 	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
+	const [isEditingLabels, setIsEditingLabels] = useState(false);
 	const [isEditingTitle, setIsEditingTitle] = useState(false);
 	const [draftTitle, setDraftTitle] = useState(card.title);
 	const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -430,13 +436,21 @@ export function BoardCard({
 	const isAnyGitActionLoading = isCommitLoading || isOpenPrLoading;
 	const cancelAutomaticActionLabel =
 		!isTrashCard && card.autoReviewEnabled ? getTaskAutoReviewCancelButtonLabel(card.autoReviewMode) : null;
-	const agentOverrideLabel = useMemo(
-		() => (card.agentId ? (getRuntimeAgentCatalogEntry(card.agentId)?.label ?? card.agentId) : null),
-		[card.agentId],
-	);
+	const effectiveAgentId = sessionSummary?.agentId ?? card.agentId ?? defaultAgentId;
+	const agentOverrideLabel = effectiveAgentId
+		? (getRuntimeAgentCatalogEntry(effectiveAgentId)?.label ?? effectiveAgentId)
+		: null;
 	const modelOverrideLabel = useMemo(() => {
+		if (sessionSummary?.modelId) return sessionSummary.modelId;
+		if (effectiveAgentId && effectiveAgentId !== "cline") {
+			return (effectiveAgentId === "codex" || effectiveAgentId === "claude") &&
+				!sessionSummary?.startedAt &&
+				card.taskOverrides?.cliModel?.trim()
+				? card.taskOverrides.cliModel.trim()
+				: "CLI default (not reported)";
+		}
 		if (card.clineSettings === undefined) {
-			return null;
+			return effectiveAgentId === "cline" ? defaultClineModelId : null;
 		}
 		const explicitReasoningLabel = card.clineSettings.reasoningEffort
 			? formatClineReasoningEffortLabel(card.clineSettings.reasoningEffort)
@@ -461,7 +475,14 @@ export function BoardCard({
 			reasoningEffort: inheritedReasoningEffort,
 			showReasoningEffort: Boolean(inheritedReasoningEffort),
 		});
-	}, [card.clineSettings, defaultClineModelId]);
+	}, [
+		card.clineSettings,
+		card.taskOverrides?.cliModel,
+		defaultClineModelId,
+		effectiveAgentId,
+		sessionSummary?.modelId,
+		sessionSummary?.startedAt,
+	]);
 	const taskAgentSettingsLabel = useMemo(() => {
 		const parts = [agentOverrideLabel, modelOverrideLabel].filter((value): value is string => Boolean(value));
 		return parts.length > 0 ? parts.join(" · ") : null;
@@ -710,6 +731,41 @@ export function BoardCard({
 									</p>
 								</div>
 							) : null}
+							<div
+								className="mt-2 flex flex-wrap items-center gap-1"
+								onClick={stopEvent}
+								onMouseDown={stopEvent}
+								onKeyDown={(event) => event.stopPropagation()}
+							>
+								{!isEditingLabels
+									? card.taskOverrides?.labels?.map((label) => (
+											<span
+												key={label}
+												className="rounded-sm bg-surface-3 px-2 py-0.5 text-xs text-text-secondary"
+											>
+												{label}
+											</span>
+										))
+									: null}
+								{onSaveLabels ? (
+									<Button
+										variant="ghost"
+										size="sm"
+										icon={<Tag size={12} />}
+										aria-label="Edit labels"
+										aria-expanded={isEditingLabels}
+										onClick={() => setIsEditingLabels(!isEditingLabels)}
+									/>
+								) : null}
+								{isEditingLabels && onSaveLabels ? (
+									<div className="w-full">
+										<TaskLabelsEditor
+											labels={card.taskOverrides?.labels}
+											onChange={(labels) => onSaveLabels(card.id, labels)}
+										/>
+									</div>
+								) : null}
+							</div>
 							{taskAgentSettingsLabel ? (
 								<div className="mt-1">
 									<span

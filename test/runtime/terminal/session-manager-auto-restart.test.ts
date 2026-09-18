@@ -49,6 +49,40 @@ describe("TerminalSessionManager auto-restart", () => {
 		}));
 	});
 
+	it("isolates per-task environments at the PTY boundary and retains them on auto-restart", async () => {
+		const spawned: Array<ReturnType<typeof createMockPtySession>> = [];
+		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {
+			const session = createMockPtySession(111 + spawned.length, request);
+			spawned.push(session);
+			return session;
+		});
+		const manager = new TerminalSessionManager();
+		manager.attach("task-1", { onOutput: vi.fn() });
+		const request = {
+			taskId: "task-1",
+			agentId: "codex" as const,
+			binary: "codex",
+			args: ["--model", "custom"],
+			modelId: "custom",
+			cwd: "/tmp/task-1",
+			prompt: "Build",
+			env: { TASK_OVERRIDE_TEST_VALUE: "literal $value" },
+		};
+		await manager.startTaskSession(request);
+		expect(ptySessionSpawnMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({ env: expect.objectContaining({ TASK_OVERRIDE_TEST_VALUE: "literal $value" }) }),
+		);
+		request.env.TASK_OVERRIDE_TEST_VALUE = "caller mutation";
+		await manager.startTaskSession({ ...request, taskId: "task-2", env: undefined });
+		expect(ptySessionSpawnMock.mock.calls[1]?.[0].env.TASK_OVERRIDE_TEST_VALUE).toBeUndefined();
+		spawned[0]?.triggerExit(130);
+		await vi.waitFor(() => expect(ptySessionSpawnMock).toHaveBeenCalledTimes(3));
+		expect(ptySessionSpawnMock.mock.calls[2]?.[0].env.TASK_OVERRIDE_TEST_VALUE).toBe("literal $value");
+		expect(manager.getSummary("task-1")?.modelId).toBe("custom");
+		manager.stopTaskSession("task-1");
+		manager.stopTaskSession("task-2");
+	});
+
 	it("restarts an attached agent session after it exits", async () => {
 		const spawnedSessions: Array<ReturnType<typeof createMockPtySession>> = [];
 		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {

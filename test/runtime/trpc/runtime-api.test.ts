@@ -413,6 +413,40 @@ describe("createRuntimeApi startTaskSession", () => {
 		rmSync(`${mcpOauthSettingsPath}.lock`, { force: true });
 	});
 
+	it.each([true, false])("passes per-task CLI settings through the start API (env enabled: %s)", async (enabled) => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		const terminalManager = { startTaskSession: vi.fn(async () => createSummary()), applyTurnCheckpoint: vi.fn() };
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+		const result = await api.startTaskSession(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{
+				taskId: "task-1",
+				prompt: "Build",
+				baseRef: "main",
+				taskOverrides: {
+					cliModel: "task-model",
+					environment: { enabled, variables: [{ name: "TOKEN", value: "literal $value" }] },
+				},
+			},
+		);
+		expect(result.ok).toBe(true);
+		expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				args: ["--model", "task-model"],
+				env: enabled ? { TOKEN: "literal $value" } : undefined,
+				modelId: "task-model",
+			}),
+		);
+	});
+
 	it("reuses an existing worktree path before falling back to ensure", async () => {
 		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
 

@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useTaskEditor } from "@/hooks/use-task-editor";
-import type { RuntimeAgentId, RuntimeTaskClineSettings } from "@/runtime/types";
+import type { RuntimeAgentId, RuntimeTaskClineSettings, TaskOverrides } from "@/runtime/types";
 import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
 
 function createTask(taskId: string, prompt: string, createdAt: number, overrides: Partial<BoardCard> = {}): BoardCard {
@@ -34,6 +34,10 @@ function createBoard(tasks: BoardCard[] = []): BoardData {
 }
 
 interface HookSnapshot {
+	newTaskOverrides?: TaskOverrides;
+	editTaskOverrides?: TaskOverrides;
+	setNewTaskOverrides: (value: TaskOverrides) => void;
+	setEditTaskOverrides: (value: TaskOverrides) => void;
 	board: BoardData;
 	isInlineTaskCreateOpen: boolean;
 	newTaskPrompt: string;
@@ -91,6 +95,10 @@ function HookHarness({
 
 	useEffect(() => {
 		onSnapshot({
+			newTaskOverrides: editor.newTaskOverrides,
+			editTaskOverrides: editor.editTaskOverrides,
+			setNewTaskOverrides: editor.setNewTaskOverrides,
+			setEditTaskOverrides: editor.setEditTaskOverrides,
 			board,
 			isInlineTaskCreateOpen: editor.isInlineTaskCreateOpen,
 			newTaskPrompt: editor.newTaskPrompt,
@@ -118,6 +126,8 @@ function HookHarness({
 		});
 	}, [
 		board,
+		editor.newTaskOverrides,
+		editor.editTaskOverrides,
 		editor.handleCreateTask,
 		editor.handleCreateTasks,
 		editor.handleOpenCreateTask,
@@ -172,6 +182,56 @@ describe("useTaskEditor", () => {
 				previousActEnvironment;
 		}
 		localStorage.clear();
+	});
+
+	it("creates, reloads, edits, and clears per-task overrides without leaking them to the next task", async () => {
+		let latest: HookSnapshot | null = null;
+		const settings: TaskOverrides = {
+			labels: ["backend"],
+			cliModel: "custom-model",
+			environment: { enabled: true, variables: [{ name: "TOKEN", value: "literal" }] },
+		};
+		await act(async () => {
+			root.render(
+				<HookHarness
+					initialBoard={createBoard()}
+					onSnapshot={(value) => {
+						latest = value;
+					}}
+				/>,
+			);
+		});
+		await act(async () => {
+			requireSnapshot(latest).handleOpenCreateTask();
+		});
+		await act(async () => {
+			requireSnapshot(latest).setNewTaskPrompt("Build feature");
+			requireSnapshot(latest).setNewTaskOverrides(settings);
+		});
+		await act(async () => {
+			requireSnapshot(latest).handleCreateTask();
+		});
+		const card = requireSnapshot(latest).board.columns[0]?.cards[0];
+		if (!card) throw new Error("Missing created task");
+		expect(card.taskOverrides).toEqual(settings);
+		expect(requireSnapshot(latest).newTaskOverrides).toBeUndefined();
+		await act(async () => {
+			requireSnapshot(latest).handleOpenEditTask(card);
+		});
+		expect(requireSnapshot(latest).editTaskOverrides).toEqual(settings);
+		await act(async () => {
+			requireSnapshot(latest).setEditTaskOverrides({
+				labels: [],
+				environment: { enabled: false, variables: [{ name: "TOKEN", value: "literal" }] },
+			});
+		});
+		await act(async () => {
+			requireSnapshot(latest).handleSaveEditedTask();
+		});
+		expect(requireSnapshot(latest).board.columns[0]?.cards[0]?.taskOverrides).toEqual({
+			labels: [],
+			environment: { ...settings.environment, enabled: false },
+		});
 	});
 
 	it("returns the edited task id when saving a task", async () => {
