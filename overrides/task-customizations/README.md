@@ -17,10 +17,37 @@
 npm ci
 npm --prefix web-ui ci
 npm run build
-node dist/cli.js
+KANBAN_NO_AUTO_UPDATE=1 node dist/cli.js --skip-shutdown-cleanup
 ```
 
 從這份 checkout 啟動，才能使用此修改。官方全域安裝的套件不會自動使用這裡的原始碼。
+
+## 打包 macOS 安裝包
+
+在 Mac 上安裝 Node.js 22+、npm、Git 及 Xcode Command Line Tools（`xcode-select --install`），然後執行：
+
+```sh
+# 預設產生與目前 Mac 相同架構的 DMG
+./overrides/task-customizations/build-release.sh
+
+# 指定 Apple Silicon、Intel，或兩種各產生一個 DMG
+./overrides/task-customizations/build-release.sh --arch arm64
+./overrides/task-customizations/build-release.sh --arch x64
+./overrides/task-customizations/build-release.sh --arch all
+
+# lockfile 沒變、依賴已安裝時可省略 npm ci
+./overrides/task-customizations/build-release.sh --skip-install
+```
+
+腳本可從任意目錄執行，會以這份 checkout **當下的程式碼（包含未 commit 修改）**重新建置 runtime、web UI 和 Electron shell。預設使用三份 lockfile 安裝依賴、執行三部分 typecheck 與桌面測試；版本帶有 Git commit，工作目錄有變更時加 `.dirty`。首次執行需要網路下載依賴與 Electron。
+
+輸出位於 `packages/desktop/out/custom/<版本>/`，包含 `Kanban-Custom-<版本>-arm64.dmg`／`-x64.dmg` 與 `SHA256SUMS`。腳本只建立本地檔案，不發布 GitHub Release、不啟動 Kanban、不 commit，也不改 package／lockfile。可在輸出目錄執行 `shasum -a 256 -c SHA256SUMS` 驗證。
+
+將 DMG 複製到對應晶片的 Mac（目前 Electron 41 需要 macOS 12 以上），開啟後把 **Kanban Custom.app** 拖進 Applications。Kanban 自帶執行所需的 Node／Electron，但使用 Codex／Claude 的 Mac 仍需安裝並登入對應 CLI，也需要 Git。安裝包不含這台 Mac 的任務資料、CLI 帳號或任務環境變數。
+
+目前為 **ad-hoc 簽署，未經 Apple 公證**的個人安裝包；若 macOS 阻擋首次開啟，先嘗試開啟 App，再到「系統設定 → 隱私權與安全性 → 強制打開」。正式對外發佈、免除這個步驟需要另設 Developer ID 簽署與公證。
+
+客製 App 停用官方自動更新，關閉時不自動將任務移到 Done 或刪除工作樹。它仍使用既有的 Kanban 資料位置與 port 3484，請先關閉官方版，再開啟客製版，避免連到已在執行的官方 runtime。這組打包設定全部放在 override 目錄；官方更新後，保留此目錄並重套下方的原始碼 patch，即可再次打包。
 
 ## 官方更新後重新套用
 

@@ -1,0 +1,13 @@
+#!/bin/bash
+# macOS packaged runtime: resolve the bundled executable, never a system Node.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+contents_dir="$(cd "$script_dir/../.." && pwd)"
+executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$contents_dir/Info.plist")"
+cli_entry="$contents_dir/Resources/app.asar.unpacked/cli/cli.js"
+
+# Preserve this build and its task worktrees when the desktop app quits.
+export ELECTRON_RUN_AS_NODE=1
+export KANBAN_NO_AUTO_UPDATE=1
+exec "$contents_dir/MacOS/$executable_name" "$cli_entry" --skip-shutdown-cleanup "$@"
