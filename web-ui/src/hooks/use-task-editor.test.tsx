@@ -3,7 +3,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useTaskEditor } from "@/hooks/use-task-editor";
+import { useTaskStartActions } from "@/hooks/use-task-start-actions";
 import type { RuntimeAgentId, RuntimeTaskClineSettings, TaskOverrides } from "@/runtime/types";
+import { normalizeBoardData } from "@/state/board-state";
 import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
 
 function createTask(taskId: string, prompt: string, createdAt: number, overrides: Partial<BoardCard> = {}): BoardCard {
@@ -34,6 +36,8 @@ function createBoard(tasks: BoardCard[] = []): BoardData {
 }
 
 interface HookSnapshot {
+	selectedTaskId: string | null;
+	handleStartEmptyTask: () => string | null;
 	newTaskOverrides?: TaskOverrides;
 	editTaskOverrides?: TaskOverrides;
 	setNewTaskOverrides: (value: TaskOverrides) => void;
@@ -71,6 +75,9 @@ function requireSnapshot(snapshot: HookSnapshot | null): HookSnapshot {
 	return snapshot;
 }
 
+const startTaskMock = vi.fn();
+const startAllTasksMock = vi.fn();
+
 function HookHarness({
 	initialBoard,
 	onSnapshot,
@@ -81,7 +88,7 @@ function HookHarness({
 	queueTaskStartAfterEdit?: (taskId: string) => void;
 }): null {
 	const [board, setBoard] = useState<BoardData>(initialBoard);
-	const [, setSelectedTaskId] = useState<string | null>(null);
+	const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 	const editor = useTaskEditor({
 		board,
 		setBoard,
@@ -92,9 +99,19 @@ function HookHarness({
 		setSelectedTaskId,
 		queueTaskStartAfterEdit,
 	});
+	const { handleStartEmptyTask } = useTaskStartActions({
+		board,
+		handleCreateTask: editor.handleCreateTask,
+		handleCreateTasks: editor.handleCreateTasks,
+		handleStartTask: startTaskMock,
+		handleStartAllBacklogTasks: startAllTasksMock,
+		setSelectedTaskId,
+	});
 
 	useEffect(() => {
 		onSnapshot({
+			selectedTaskId,
+			handleStartEmptyTask,
 			newTaskOverrides: editor.newTaskOverrides,
 			editTaskOverrides: editor.editTaskOverrides,
 			setNewTaskOverrides: editor.setNewTaskOverrides,
@@ -125,6 +142,8 @@ function HookHarness({
 			setNewTaskClineSettings: editor.setNewTaskClineSettings,
 		});
 	}, [
+		selectedTaskId,
+		handleStartEmptyTask,
 		board,
 		editor.newTaskOverrides,
 		editor.editTaskOverrides,
@@ -161,6 +180,8 @@ describe("useTaskEditor", () => {
 	let previousActEnvironment: boolean | undefined;
 
 	beforeEach(() => {
+		startTaskMock.mockClear();
+		startAllTasksMock.mockClear();
 		localStorage.clear();
 		previousActEnvironment = (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
 			.IS_REACT_ACT_ENVIRONMENT;
@@ -183,6 +204,71 @@ describe("useTaskEditor", () => {
 		}
 		localStorage.clear();
 	});
+
+	it.each(["codex", "claude"] as const)(
+		"creates and opens an empty %s task and preserves it across reload and edit",
+		async (agentId) => {
+			let latest: HookSnapshot | null = null;
+			await act(async () => {
+				root.render(
+					<HookHarness
+						initialBoard={createBoard()}
+						onSnapshot={(value) => {
+							latest = value;
+						}}
+					/>,
+				);
+			});
+			await act(async () => {
+				requireSnapshot(latest).handleOpenCreateTask();
+			});
+			const overrides: TaskOverrides = {
+				launchProfileId: "work",
+				cliModel: "custom-model",
+				cliArgs: ["-c", "model_context_window=100000"],
+			};
+			await act(async () => {
+				requireSnapshot(latest).setNewTaskAgentId(agentId);
+				requireSnapshot(latest).setNewTaskPrompt(" \n ");
+				requireSnapshot(latest).setNewTaskOverrides(overrides);
+			});
+			// Create alone still requires text; Start explicitly creates a prompt-free session.
+			await act(async () => {
+				expect(requireSnapshot(latest).handleCreateTask()).toBeNull();
+			});
+			await act(async () => {
+				requireSnapshot(latest).handleStartEmptyTask();
+			});
+			const snapshot = requireSnapshot(latest);
+			const task = snapshot.board.columns[0]?.cards[0];
+			if (!task) throw new Error("Expected an empty task card");
+			expect(task).toMatchObject({
+				title: "New task",
+				prompt: "",
+				agentId,
+				baseRef: "main",
+				taskOverrides: overrides,
+				startInPlanMode: false,
+			});
+			expect(snapshot.selectedTaskId).toBe(task.id);
+			expect(snapshot.isInlineTaskCreateOpen).toBe(false);
+			expect(startTaskMock).toHaveBeenCalledExactlyOnceWith(task.id);
+			expect(normalizeBoardData(JSON.parse(JSON.stringify(snapshot.board)))?.columns[0]?.cards[0]).toEqual(task);
+			await act(async () => {
+				requireSnapshot(latest).handleOpenEditTask(task);
+			});
+			await act(async () => {
+				requireSnapshot(latest).setEditTaskOverrides({ ...overrides, cliModel: "another-model" });
+			});
+			await act(async () => {
+				expect(requireSnapshot(latest).handleSaveEditedTask()).toBe(task.id);
+			});
+			expect(requireSnapshot(latest).board.columns[0]?.cards[0]).toMatchObject({
+				prompt: "",
+				taskOverrides: { cliModel: "another-model" },
+			});
+		},
+	);
 
 	it("creates, reloads, edits, and clears per-task overrides without leaking them to the next task", async () => {
 		let latest: HookSnapshot | null = null;

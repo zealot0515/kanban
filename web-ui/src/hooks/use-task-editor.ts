@@ -32,8 +32,9 @@ interface OpenEditTaskOptions {
 	preserveDetailSelection?: boolean;
 }
 
-interface CreateTaskOptions {
+export interface CreateTaskOptions {
 	keepDialogOpen?: boolean;
+	allowEmptyPrompt?: boolean;
 }
 
 export interface UseTaskEditorResult {
@@ -280,7 +281,8 @@ export function useTaskEditor({
 			return null;
 		}
 		const prompt = editTaskPrompt.trim();
-		if (!prompt) {
+		const existingCard = findCardSelection(board, editingTaskId)?.card;
+		if (!prompt && (!existingCard || existingCard.prompt.trim())) {
 			return null;
 		}
 		if (!(editTaskBranchRef || resolvedDefaultTaskBranchRef)) {
@@ -320,6 +322,7 @@ export function useTaskEditor({
 		setEditTaskOverrides(undefined);
 		return savedTaskId;
 	}, [
+		board,
 		editTaskAgentId,
 		editTaskAutoReviewEnabled,
 		editTaskAutoReviewMode,
@@ -382,22 +385,23 @@ export function useTaskEditor({
 				return null;
 			}
 			const prompt = newTaskPrompt.trim();
-			if (!prompt) {
+			const effectiveAgentId = newTaskAgentId ?? selectedAgentId;
+			if (!prompt && (!options?.allowEmptyPrompt || !effectiveAgentId || effectiveAgentId === "cline")) {
 				return null;
 			}
 			if (!(newTaskBranchRef || resolvedDefaultTaskBranchRef)) {
 				return null;
 			}
 			const baseRef = newTaskBranchRef || resolvedDefaultTaskBranchRef;
-			const title = deriveTaskTitleFromPrompt(prompt);
+			const title = deriveTaskTitleFromPrompt(prompt) || "New task";
 			const created = addTaskToColumnWithResult(board, "backlog", {
 				title,
 				prompt,
-				startInPlanMode: newTaskStartInPlanMode,
+				startInPlanMode: Boolean(prompt) && newTaskStartInPlanMode,
 				autoReviewEnabled: newTaskAutoReviewEnabled,
 				autoReviewMode: newTaskAutoReviewMode,
 				images: newTaskImages,
-				agentId: newTaskAgentId,
+				agentId: prompt ? newTaskAgentId : (effectiveAgentId ?? undefined),
 				clineSettings: newTaskClineSettings,
 				taskOverrides: newTaskOverrides,
 				baseRef,
@@ -405,7 +409,7 @@ export function useTaskEditor({
 			setBoard(created.board);
 			trackTaskCreated({
 				selected_agent_id: toTelemetrySelectedAgentId(newTaskAgentId ?? selectedAgentId),
-				start_in_plan_mode: newTaskStartInPlanMode,
+				start_in_plan_mode: Boolean(prompt) && newTaskStartInPlanMode,
 				...(newTaskAutoReviewEnabled ? { auto_review_mode: newTaskAutoReviewMode } : {}),
 				prompt_character_count: prompt.length,
 			});

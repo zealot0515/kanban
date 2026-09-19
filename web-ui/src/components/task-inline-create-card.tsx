@@ -58,7 +58,6 @@ export function TaskInlineCreateCard({
 	onImagesChange,
 	onCreate,
 	onCreateAndStart,
-	onStartInteractive,
 	onCancel,
 	startInPlanMode,
 	onStartInPlanModeChange,
@@ -72,6 +71,7 @@ export function TaskInlineCreateCard({
 	branchOptions,
 	onBranchRefChange,
 	enabled = true,
+	allowEmptyPrompt = false,
 	mode = "create",
 	idPrefix = "inline-task",
 	agentId,
@@ -94,7 +94,6 @@ export function TaskInlineCreateCard({
 	onImagesChange?: Dispatch<SetStateAction<TaskImage[]>>;
 	onCreate: () => void;
 	onCreateAndStart?: () => void;
-	onStartInteractive?: () => void;
 	onCancel?: () => void;
 	startInPlanMode: boolean;
 	onStartInPlanModeChange: (value: boolean) => void;
@@ -108,6 +107,7 @@ export function TaskInlineCreateCard({
 	branchOptions: TaskBranchOption[];
 	onBranchRefChange: (value: string) => void;
 	enabled?: boolean;
+	allowEmptyPrompt?: boolean;
 	mode?: TaskInlineCardMode;
 	idPrefix?: string;
 	agentId?: RuntimeAgentId | undefined;
@@ -237,7 +237,7 @@ export function TaskInlineCreateCard({
 					images={images}
 					onImagesChange={onImagesChange}
 					onSubmit={onCreate}
-					onSubmitAndStart={prompt.trim() ? onCreateAndStart : onStartInteractive}
+					onSubmitAndStart={onCreateAndStart}
 					onEscape={onCancel}
 					placeholder="Describe the task..."
 					enabled={enabled}
@@ -363,7 +363,7 @@ export function TaskInlineCreateCard({
 						size="sm"
 						className="whitespace-nowrap"
 						onClick={onCreate}
-						disabled={!prompt.trim() || !branchRef}
+						disabled={(!prompt.trim() && !allowEmptyPrompt) || !branchRef}
 					>
 						<span className="inline-flex items-center">
 							<span>{actionLabel}</span>
@@ -375,8 +375,8 @@ export function TaskInlineCreateCard({
 							variant="primary"
 							size="sm"
 							className="whitespace-nowrap"
-							onClick={() => (prompt.trim() ? onCreateAndStart() : onStartInteractive?.())}
-							disabled={prompt.trim() ? !branchRef : !onStartInteractive}
+							onClick={onCreateAndStart}
+							disabled={(!prompt.trim() && !allowEmptyPrompt) || !branchRef}
 						>
 							<span className="inline-flex items-center">
 								<span>Start</span>

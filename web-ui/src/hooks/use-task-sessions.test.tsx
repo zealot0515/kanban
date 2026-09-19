@@ -105,6 +105,42 @@ describe("useTaskSessions", () => {
 		}
 	});
 
+	it("starts an empty task session without sending its title, attachments, or plan command", async () => {
+		let latest: HookSnapshot | null = null;
+		await act(async () => {
+			root.render(
+				<HookHarness
+					onSnapshot={(value) => {
+						latest = value;
+					}}
+				/>,
+			);
+		});
+		await act(async () => {
+			await latest?.startTaskSession({
+				...createTask(),
+				title: "New task",
+				prompt: "",
+				agentId: "codex",
+				startInPlanMode: true,
+				images: [{ id: "image-1", mimeType: "image/png", data: "abc" }],
+				taskOverrides: { launchProfileId: "work" },
+			});
+		});
+		expect(startTaskSessionMutateMock).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				taskId: "task-1",
+				taskTitle: "New task",
+				prompt: "",
+				images: undefined,
+				startInPlanMode: undefined,
+				agentId: "codex",
+				taskOverrides: { launchProfileId: "work" },
+				baseRef: "main",
+			}),
+		);
+	});
+
 	it("tracks successful resume-from-trash starts", async () => {
 		let latestSnapshot: HookSnapshot | null = null;
 

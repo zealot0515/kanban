@@ -81,6 +81,28 @@ afterEach(() => {
 });
 
 describe("prepareAgentLaunch hook strategies", () => {
+	it.each(["codex", "claude"] as const)(
+		"opens a blank %s task with hooks but no prompt or deferred input",
+		async (agentId) => {
+			setupTempHome();
+			setKanbanProcessContext();
+			const launch = await prepareAgentLaunch({
+				taskId: "empty-task",
+				agentId,
+				binary: agentId,
+				args: ["--model", "custom-model"],
+				cwd: "/tmp",
+				prompt: "",
+				workspaceId: "workspace-1",
+			});
+			expect(launch.env.KANBAN_HOOK_TASK_ID).toBe("empty-task");
+			expect(launch.args.slice(0, 2)).toEqual(["--model", "custom-model"]);
+			expect(launch.args).not.toContain("");
+			expect(launch.args).not.toContain("New task");
+			expect(launch.deferredStartupInput).toBeUndefined();
+		},
+	);
+
 	it("configures Codex hooks without legacy notify", async () => {
 		setupTempHome();
 		const launch = await prepareAgentLaunch({

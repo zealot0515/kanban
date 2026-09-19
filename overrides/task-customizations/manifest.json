@@ -40,8 +40,11 @@
     "src/core/launch-profiles.ts",
     "test/runtime/launch-profiles.test.ts",
     "web-ui/src/components/runtime-settings-dialog.tsx",
-    "web-ui/src/hooks/use-terminal-panels.ts",
     "web-ui/src/runtime/runtime-config-query.ts",
-    "web-ui/src/runtime/use-runtime-config.ts"
+    "web-ui/src/runtime/use-runtime-config.ts",
+    "web-ui/src/hooks/use-task-start-actions.ts",
+    "web-ui/src/hooks/use-task-sessions.test.tsx",
+    "web-ui/src/components/task-create-dialog.test.tsx",
+    "test/runtime/terminal/agent-session-adapters.test.ts"
   ]
 }

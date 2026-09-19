@@ -292,7 +292,7 @@ export function addTaskToColumn(
 	now: number = Date.now(),
 ): RuntimeCreateTaskResult {
 	const prompt = input.prompt.trim();
-	if (!prompt) {
+	if (!prompt && !input.title?.trim()) {
 		throw new Error("Task prompt is required.");
 	}
 	const baseRef = input.baseRef.trim();
@@ -596,7 +596,7 @@ export function updateTask(
 	}
 
 	const prompt = input.prompt.trim();
-	if (!prompt) {
+	if (!prompt && !input.title?.trim()) {
 		return {
 			board,
 			task: null,

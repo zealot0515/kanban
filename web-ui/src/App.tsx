@@ -415,7 +415,6 @@ export default function App(): ReactElement {
 		handleToggleExpandHomeTerminal,
 		handleToggleExpandDetailTerminal,
 		handleToggleHomeTerminal,
-		startInteractiveAgentSession,
 		handleToggleDetailTerminal,
 		handleSendAgentCommandToHomeTerminal,
 		handleSendAgentCommandToDetailTerminal,
@@ -435,23 +434,6 @@ export default function App(): ReactElement {
 		sendTaskSessionInput,
 	});
 
-	const handleStartInteractiveAgent = useCallback(() => {
-		const agentId = newTaskAgentId ?? runtimeProjectConfig?.selectedAgentId ?? null;
-		if (!agentId) {
-			return;
-		}
-		void startInteractiveAgentSession(agentId, newTaskOverrides).then((started) => {
-			if (started) {
-				handleCancelCreateTask();
-			}
-		});
-	}, [
-		handleCancelCreateTask,
-		newTaskAgentId,
-		newTaskOverrides,
-		runtimeProjectConfig?.selectedAgentId,
-		startInteractiveAgentSession,
-	]);
 	const homeTerminalSummary = sessions[homeTerminalTaskId] ?? null;
 	const homeSidebarAgentPanel = useHomeSidebarAgentPanel({
 		currentProjectId,
@@ -624,6 +606,7 @@ export default function App(): ReactElement {
 	});
 
 	const {
+		handleStartEmptyTask,
 		handleCreateAndStartTask,
 		handleCreateAndStartTasks,
 		handleCreateStartAndOpenTask,
@@ -816,6 +799,7 @@ export default function App(): ReactElement {
 			defaultModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
 			defaultReasoningEffort={runtimeProjectConfig?.clineProviderSettings?.reasoningEffort ?? null}
 			launchProfiles={runtimeProjectConfig?.launchProfiles ?? []}
+			allowEmptyPrompt={findCardSelection(board, editingTaskId)?.card.prompt === ""}
 			mode="edit"
 			idPrefix={`inline-edit-task-${editingTaskId}`}
 		/>
@@ -1145,7 +1129,7 @@ export default function App(): ReactElement {
 					onImagesChange={setNewTaskImages}
 					onCreate={handleCreateTask}
 					onCreateAndStart={handleCreateAndStartTask}
-					onStartInteractive={handleStartInteractiveAgent}
+					onStartEmptyTask={handleStartEmptyTask}
 					onCreateStartAndOpen={handleCreateStartAndOpenTask}
 					onCreateMultiple={handleCreateTasks}
 					onCreateAndStartMultiple={handleCreateAndStartTasks}

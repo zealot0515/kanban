@@ -101,8 +101,6 @@ export interface StartShellSessionRequest {
 	binary: string;
 	args?: string[];
 	env?: Record<string, string | undefined>;
-	agentId?: AgentAdapterLaunchInput["agentId"] | null;
-	modelId?: string | null;
 }
 
 function now(): number {
@@ -656,8 +654,8 @@ export class TerminalSessionManager implements TerminalSessionService {
 			terminalStateMirror.dispose();
 			const summary = updateSummary(entry, {
 				state: "failed",
-				agentId: request.agentId ?? null,
-				modelId: request.modelId ?? null,
+				agentId: null,
+				modelId: null,
 				workspacePath: request.cwd,
 				pid: null,
 				startedAt: null,
@@ -694,8 +692,8 @@ export class TerminalSessionManager implements TerminalSessionService {
 
 		updateSummary(entry, {
 			state: "running",
-			agentId: request.agentId ?? null,
-			modelId: request.modelId ?? null,
+			agentId: null,
+			modelId: null,
 			workspacePath: request.cwd,
 			pid: session.pid,
 			startedAt: now(),

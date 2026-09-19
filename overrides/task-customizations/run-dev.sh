@@ -60,8 +60,10 @@ export NODE_ENV=development
 export KANBAN_NO_AUTO_UPDATE=1
 
 printf 'Starting Kanban development version from %s\n' "$repo_root"
+# npm run prepends node_modules/.bin to PATH. The Cline SDK brings its own
+# Codex CLI there, which must not shadow the CLI installed by the user.
 if [[ ${#dev_args[@]} -gt 0 ]]; then
-  exec npm run dev:full -- "${dev_args[@]}"
+  exec node scripts/dev-full.mjs "${dev_args[@]}"
 else
-  exec npm run dev:full
+  exec node scripts/dev-full.mjs
 fi

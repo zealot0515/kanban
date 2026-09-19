@@ -447,7 +447,7 @@ describe("createRuntimeApi startTaskSession", () => {
 		);
 	});
 
-	it("starts an empty interactive agent session with task launch settings", async () => {
+	it("starts an empty CLI task in its worktree using the task-session API", async () => {
 		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
 			agentId: "codex",
 			label: "OpenAI Codex",
@@ -455,9 +455,11 @@ describe("createRuntimeApi startTaskSession", () => {
 			binary: "codex",
 			args: [],
 		});
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/empty-task-worktree");
 		const terminalManager = {
-			stopTaskSession: vi.fn(),
-			startShellSession: vi.fn(async () => createSummary({ taskId: "__home_terminal__", agentId: "codex" })),
+			startTaskSession: vi.fn(async () => createSummary()),
+			applyTurnCheckpoint: vi.fn(),
+			startShellSession: vi.fn(),
 		};
 		const api = createTestRuntimeApi({
 			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
@@ -468,30 +470,30 @@ describe("createRuntimeApi startTaskSession", () => {
 			resolveInteractiveShellCommand: vi.fn(),
 			runCommand: vi.fn(),
 		});
-
-		const result = await api.startShellSession(
+		const result = await api.startTaskSession(
 			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
 			{
-				taskId: "__home_terminal__",
-				baseRef: "main",
+				taskId: "task-1",
+				taskTitle: "New task",
+				prompt: "",
 				agentId: "codex",
-				taskOverrides: {
-					cliArgs: ["-c", "model_context_window=100000"],
-					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
-				},
+				baseRef: "main",
+				taskOverrides: { cliModel: "task-model", cliArgs: ["-c", "model_context_window=100000"] },
 			},
 		);
-
 		expect(result.ok).toBe(true);
-		expect(terminalManager.stopTaskSession).toHaveBeenCalledWith("__home_terminal__");
-		expect(terminalManager.startShellSession).toHaveBeenCalledWith(
+		expect(terminalManager.startTaskSession).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({
-				binary: "codex",
-				args: ["-c", "model_context_window=100000"],
-				env: { OPENAI_API_KEY: "task-key" },
+				taskId: "task-1",
 				agentId: "codex",
+				cwd: "/tmp/empty-task-worktree",
+				workspaceId: "workspace-1",
+				prompt: "",
+				args: ["--model", "task-model", "-c", "model_context_window=100000"],
+				modelId: "task-model",
 			}),
 		);
+		expect(terminalManager.startShellSession).not.toHaveBeenCalled();
 	});
 
 	it("reuses an existing worktree path before falling back to ensure", async () => {

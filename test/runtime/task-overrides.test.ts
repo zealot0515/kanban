@@ -12,6 +12,24 @@ describe("task overrides", () => {
 		environment: { enabled: true, variables: [{ name: "API_TOKEN", value: "spaces $literal `text`=value" }] },
 	};
 
+	it("persists a titled empty task through API validation and updates without substituting a prompt", () => {
+		const created = addTaskToColumn(
+			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },
+			"backlog",
+			{ title: "New task", prompt: "", agentId: "codex", baseRef: "main", taskOverrides: settings },
+			() => "task-1",
+		);
+		const restored = runtimeBoardCardSchema.parse(JSON.parse(JSON.stringify(created.task)));
+		expect(restored).toMatchObject({ title: "New task", prompt: "", taskOverrides: settings });
+		const updated = updateTask(created.board, created.task.id, {
+			title: "Configure model",
+			prompt: "",
+			baseRef: "main",
+		});
+		expect(updated.updated).toBe(true);
+		expect(updated.task).toMatchObject({ title: "Configure model", prompt: "", taskOverrides: settings });
+	});
+
 	it("persists overrides across API validation and unrelated task edits without sharing mutable state", () => {
 		const created = addTaskToColumn(
 			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },

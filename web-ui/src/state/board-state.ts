@@ -173,7 +173,7 @@ function normalizeCard(rawCard: unknown): BoardCard | null {
 		updatedAt?: unknown;
 	};
 	const prompt = typeof card.prompt === "string" ? card.prompt.trim() : "";
-	if (!prompt) {
+	if (typeof card.prompt !== "string") {
 		return null;
 	}
 	const baseRef = typeof card.baseRef === "string" ? card.baseRef.trim() : "";
@@ -329,7 +329,7 @@ export function normalizeBoardData(rawBoard: unknown): BoardData | null {
 
 export function addTaskToColumn(board: BoardData, columnId: BoardColumnId, draft: TaskDraft): BoardData {
 	const prompt = draft.prompt.trim();
-	if (!prompt) {
+	if (!prompt && !draft.title?.trim()) {
 		return board;
 	}
 	return addTaskToColumnWithResult(board, columnId, draft).board;
@@ -341,7 +341,7 @@ export function addTaskToColumnWithResult(
 	draft: TaskDraft,
 ): { board: BoardData; task: BoardCard } {
 	const prompt = draft.prompt.trim();
-	if (!prompt) {
+	if (!prompt && !draft.title?.trim()) {
 		throw new Error("Task prompt is required.");
 	}
 	const result = runtimeTaskState.addTaskToColumn(
@@ -522,7 +522,7 @@ export function moveTaskToColumn(
 
 export function updateTask(board: BoardData, taskId: string, draft: TaskDraft): { board: BoardData; updated: boolean } {
 	const prompt = draft.prompt.trim();
-	if (!prompt) {
+	if (!prompt && !draft.title?.trim()) {
 		return { board, updated: false };
 	}
 	const title = typeof draft.title === "string" ? draft.title.trim() : "";

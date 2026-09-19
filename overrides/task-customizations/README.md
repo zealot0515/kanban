@@ -10,7 +10,7 @@
 - 環境變數會以**未加密文字**儲存在任務資料中；密碼欄只隱藏畫面顯示。不要把含機密的任務資料分享出去。
 - Settings 的 **Launch profiles** 可預先保存環境變數與 CLI 參數；值使用 AES-256-GCM 加密，macOS 優先把金鑰放在 Keychain，設定頁與 task 表單只顯示變數是否已設定，不回傳 secret。啟動 task 時 profile 變數先套用，task 變數後套用，因此 task 可以覆蓋 profile。
 - CLI 參數可以在 profile 或 task 的 Additional CLI arguments 中逐行輸入，例如 Codex 的 `-c` 與 `model_context_window=100000`；程式會以 argv 傳入，不經 shell 展開。
-- 新增 task 時若 prompt 留白直接按 **Start**，會在 home terminal 開啟選定的 Codex／Claude CLI，不建立卡片、不送出 prompt，方便先在 CLI 內切換 model 或設定；輸入 prompt 時仍使用原本建立 task 並啟動的流程。
+- 新增 task 時若 prompt 留白直接按 **Start**，會建立 **New task** 卡片與自己的 worktree，並直接開啟 task 詳細頁的 Codex／Claude CLI；不送出 prompt、附件或 `/plan` 指令，可先用 `/model` 調整模型再開始對話。卡片可重新命名，profile、環境變數與 CLI 參數照常套用；重新整理後仍會保留卡片。輸入 prompt 時維持原本 Start／Start and open 的流程。
 - 每一欄的卡片都可用鉛筆改名、標籤按鈕新增／移除 label。改名不改 prompt。
 - 卡片模型優先顯示執行階段回報（Codex `turn_context`、Claude 主 session 的 assistant transcript），其次顯示啟動時指定的模型。CLI 尚未回報預設模型時顯示 `CLI default (not reported)`。更換 CLI 內模型後，下一次相關記錄／hook 回報會更新；顯示不保證涵蓋 CLI 自己啟動的子代理模型。
 
@@ -32,6 +32,8 @@ KANBAN_NO_AUTO_UPDATE=1 node dist/cli.js --skip-shutdown-cleanup
 ```
 
 腳本會在缺少依賴時執行 `npm ci`，停用自動更新，讓 `dev-full` 自動選擇可用的 runtime／Vite port 並開啟瀏覽器。按 `Ctrl-C` 會同時停止兩個開發程序；依賴已安裝時可用 `--skip-install`。其他參數會傳給開發 server，例如 `--no-open` 或 `--with-shutdown-cleanup`。若官方版 Kanban 正在使用預設 port，開發 server 會自動選下一個可用 port。
+
+腳本以 `node scripts/dev-full.mjs` 直接啟動，保留 Terminal 的 PATH，讓 Kanban 使用你安裝的 Codex／Claude。不要改回 `npm run dev:full`：npm 會把 `node_modules/.bin` 放到 PATH 最前面，而 Cline SDK 的間接依賴包含另一份 Codex，可能蓋過 Homebrew 安裝的版本。若遇到 macOS 封鎖 `codex`，先確認系統記錄指出的執行檔路徑；更新此腳本後，請在原本的 Terminal 用 `Ctrl-C` 停止舊 dev server，再重新執行。
 
 ## 打包 macOS 安裝包
 

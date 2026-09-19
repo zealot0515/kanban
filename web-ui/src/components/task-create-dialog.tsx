@@ -109,7 +109,7 @@ export function TaskCreateDialog({
 	onImagesChange,
 	onCreate,
 	onCreateAndStart,
-	onStartInteractive,
+	onStartEmptyTask,
 	onCreateMultiple,
 	onCreateAndStartMultiple,
 	onCreateStartAndOpen,
@@ -144,7 +144,7 @@ export function TaskCreateDialog({
 	onImagesChange: Dispatch<SetStateAction<TaskImage[]>>;
 	onCreate: (options?: { keepDialogOpen?: boolean }) => string | null;
 	onCreateAndStart?: (options?: { keepDialogOpen?: boolean }) => string | null;
-	onStartInteractive?: () => void;
+	onStartEmptyTask?: () => void;
 	onCreateMultiple: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
 	onCreateAndStartMultiple?: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
 	onCreateStartAndOpen?: (options?: { keepDialogOpen?: boolean }) => string | null;
@@ -209,6 +209,8 @@ export function TaskCreateDialog({
 		defaultModelId,
 	});
 
+	const effectiveAgentId = agentId ?? defaultAgentId;
+	const canStartEmptyTask = Boolean(onStartEmptyTask && effectiveAgentId && effectiveAgentId !== "cline");
 	const detectedItems = useMemo(() => parseListItems(prompt), [prompt]);
 	const validTaskCount = useMemo(() => taskPrompts.filter((p) => p.trim()).length, [taskPrompts]);
 	const effectivePrimaryStartAction =
@@ -305,25 +307,25 @@ export function TaskCreateDialog({
 
 	const handleCreateAndStartSingle = useCallback(() => {
 		if (!prompt.trim()) {
-			onStartInteractive?.();
+			if (canStartEmptyTask && branchRef) onStartEmptyTask?.();
 			return;
 		}
 		const createdTaskId = onCreateAndStart?.({ keepDialogOpen: createMore });
 		if (createMore && createdTaskId) {
 			resetForCreateMore();
 		}
-	}, [createMore, onCreateAndStart, onStartInteractive, prompt, resetForCreateMore]);
+	}, [createMore, onCreateAndStart, onStartEmptyTask, prompt, resetForCreateMore, canStartEmptyTask, branchRef]);
 
 	const handleCreateStartAndOpenSingle = useCallback(() => {
 		if (!prompt.trim()) {
-			onStartInteractive?.();
+			if (canStartEmptyTask && branchRef) onStartEmptyTask?.();
 			return;
 		}
 		const createdTaskId = onCreateStartAndOpen?.({ keepDialogOpen: createMore });
 		if (createMore && createdTaskId) {
 			resetForCreateMore();
 		}
-	}, [createMore, onCreateStartAndOpen, onStartInteractive, prompt, resetForCreateMore]);
+	}, [createMore, onCreateStartAndOpen, onStartEmptyTask, prompt, resetForCreateMore, canStartEmptyTask, branchRef]);
 
 	const handleRunSingleStartAction = useCallback(
 		(action: TaskCreateStartAction) => {
@@ -656,7 +658,7 @@ export function TaskCreateDialog({
 										variant="primary"
 										size="sm"
 										onClick={() => handleRunSingleStartAction(primaryStartAction)}
-										disabled={prompt.trim() ? !branchRef : !onStartInteractive}
+										disabled={!branchRef || (!prompt.trim() && !canStartEmptyTask)}
 										className={onCreateStartAndOpen ? "rounded-r-none" : undefined}
 									>
 										<span className="inline-flex items-center">
@@ -669,7 +671,7 @@ export function TaskCreateDialog({
 											<Button
 												variant="primary"
 												size="sm"
-												disabled={prompt.trim() ? !branchRef : !onStartInteractive}
+												disabled={!branchRef || (!prompt.trim() && !canStartEmptyTask)}
 												className="rounded-l-none border-l border-white/20 px-1"
 												aria-label="More start options"
 											>

@@ -1121,8 +1121,6 @@ export const runtimeShellSessionStartRequestSchema = z.object({
 	rows: z.number().int().positive().optional(),
 	workspaceTaskId: z.string().optional(),
 	baseRef: z.string(),
-	agentId: runtimeAgentIdSchema.optional(),
-	taskOverrides: taskOverridesSchema.optional(),
 });
 export type RuntimeShellSessionStartRequest = z.infer<typeof runtimeShellSessionStartRequestSchema>;
 
