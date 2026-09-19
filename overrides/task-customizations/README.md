@@ -25,6 +25,14 @@ KANBAN_NO_AUTO_UPDATE=1 node dist/cli.js --skip-shutdown-cleanup
 
 從這份 checkout 啟動，才能使用此修改。官方全域安裝的套件不會自動使用這裡的原始碼。
 
+若要直接跑目前 checkout 的開發版本（runtime 與 web UI 會一起啟動），執行：
+
+```sh
+./overrides/task-customizations/run-dev.sh
+```
+
+腳本會在缺少依賴時執行 `npm ci`，停用自動更新，讓 `dev-full` 自動選擇可用的 runtime／Vite port 並開啟瀏覽器。按 `Ctrl-C` 會同時停止兩個開發程序；依賴已安裝時可用 `--skip-install`。其他參數會傳給開發 server，例如 `--no-open` 或 `--with-shutdown-cleanup`。若官方版 Kanban 正在使用預設 port，開發 server 會自動選下一個可用 port。
+
 ## 打包 macOS 安裝包
 
 在 Mac 上安裝 Node.js 22+、npm、Git 及 Xcode Command Line Tools（`xcode-select --install`），然後執行：
