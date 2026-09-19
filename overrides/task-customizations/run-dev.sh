@@ -60,4 +60,8 @@ export NODE_ENV=development
 export KANBAN_NO_AUTO_UPDATE=1
 
 printf 'Starting Kanban development version from %s\n' "$repo_root"
-exec npm run dev:full -- "${dev_args[@]}"
+if [[ ${#dev_args[@]} -gt 0 ]]; then
+  exec npm run dev:full -- "${dev_args[@]}"
+else
+  exec npm run dev:full
+fi
