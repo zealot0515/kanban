@@ -8,6 +8,21 @@ export const taskOverridesSchema = z.object({
 		.max(200)
 		.refine((value) => !/[\r\n\0]/.test(value), "Invalid model ID")
 		.optional(),
+	launchProfileId: z
+		.string()
+		.trim()
+		.max(80)
+		.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid launch profile ID")
+		.optional(),
+	cliArgs: z
+		.array(
+			z
+				.string()
+				.max(500)
+				.refine((value) => !/[\0\r\n]/.test(value), "CLI arguments cannot contain NUL or newlines"),
+		)
+		.max(100)
+		.optional(),
 	environment: z
 		.object({
 			enabled: z.boolean(),

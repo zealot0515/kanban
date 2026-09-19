@@ -7,7 +7,12 @@ import {
 	writePersistedResizeNumber,
 } from "@/resize/resize-persistence";
 import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
-import type { RuntimeGitRepositoryInfo, RuntimeTaskSessionSummary } from "@/runtime/types";
+import type {
+	RuntimeAgentId,
+	RuntimeGitRepositoryInfo,
+	RuntimeTaskSessionSummary,
+	TaskOverrides,
+} from "@/runtime/types";
 import { LocalStorageKey, removeLocalStorageItem } from "@/storage/local-storage-store";
 import { getTerminalGeometry, prepareWaitForTerminalGeometry } from "@/terminal/terminal-geometry-registry";
 import type { SendTerminalInputOptions } from "@/terminal/terminal-input";
@@ -108,6 +113,7 @@ export interface UseTerminalPanelsResult {
 	handleToggleExpandHomeTerminal: () => void;
 	handleToggleExpandDetailTerminal: () => void;
 	handleToggleHomeTerminal: () => void;
+	startInteractiveAgentSession: (agentId: RuntimeAgentId, taskOverrides?: TaskOverrides) => Promise<boolean>;
 	handleToggleDetailTerminal: () => void;
 	handleSendAgentCommandToHomeTerminal: () => void;
 	handleSendAgentCommandToDetailTerminal: () => void;
@@ -252,36 +258,56 @@ export function useTerminalPanels({
 		}));
 	}, [detailTerminalTaskId, updateDetailTerminalPanelState]);
 
-	const startHomeTerminalSession = useCallback(async (): Promise<boolean> => {
-		if (!currentProjectId) {
-			return false;
-		}
-		setIsHomeTerminalStarting(true);
-		try {
-			const geometry = await resolveShellTerminalGeometry(HOME_TERMINAL_TASK_ID);
-			const trpcClient = getRuntimeTrpcClient(currentProjectId);
-			const payload = await trpcClient.runtime.startShellSession.mutate({
-				taskId: HOME_TERMINAL_TASK_ID,
-				cols: geometry.cols,
-				rows: geometry.rows,
-				baseRef: workspaceGit?.currentBranch ?? workspaceGit?.defaultBranch ?? "HEAD",
-			});
-			if (!payload.ok || !payload.summary) {
-				throw new Error(payload.error ?? "Could not start terminal session.");
+	const startHomeTerminalSession = useCallback(
+		async (launch?: { agentId?: RuntimeAgentId; taskOverrides?: TaskOverrides }): Promise<boolean> => {
+			if (!currentProjectId) {
+				return false;
 			}
-			upsertSession(payload.summary);
-			setHomeTerminalShellBinary(
-				typeof payload.shellBinary === "string" && payload.shellBinary.trim() ? payload.shellBinary : null,
-			);
-			return true;
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			notifyError(message);
-			return false;
-		} finally {
-			setIsHomeTerminalStarting(false);
-		}
-	}, [currentProjectId, upsertSession, workspaceGit?.currentBranch, workspaceGit?.defaultBranch]);
+			setIsHomeTerminalStarting(true);
+			try {
+				const geometry = await resolveShellTerminalGeometry(HOME_TERMINAL_TASK_ID);
+				const trpcClient = getRuntimeTrpcClient(currentProjectId);
+				const payload = await trpcClient.runtime.startShellSession.mutate({
+					taskId: HOME_TERMINAL_TASK_ID,
+					cols: geometry.cols,
+					rows: geometry.rows,
+					baseRef: workspaceGit?.currentBranch ?? workspaceGit?.defaultBranch ?? "HEAD",
+					...(launch?.agentId ? { agentId: launch.agentId, taskOverrides: launch.taskOverrides } : {}),
+				});
+				if (!payload.ok || !payload.summary) {
+					throw new Error(payload.error ?? "Could not start terminal session.");
+				}
+				upsertSession(payload.summary);
+				setHomeTerminalShellBinary(
+					typeof payload.shellBinary === "string" && payload.shellBinary.trim() ? payload.shellBinary : null,
+				);
+				return true;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				notifyError(message);
+				return false;
+			} finally {
+				setIsHomeTerminalStarting(false);
+			}
+		},
+		[currentProjectId, upsertSession, workspaceGit?.currentBranch, workspaceGit?.defaultBranch],
+	);
+
+	const startInteractiveAgentSession = useCallback(
+		async (agentId: RuntimeAgentId, taskOverrides?: TaskOverrides): Promise<boolean> => {
+			if (!currentProjectId) {
+				return false;
+			}
+			homeTerminalProjectIdRef.current = currentProjectId;
+			setIsHomeTerminalOpen(true);
+			const started = await startHomeTerminalSession({ agentId, taskOverrides });
+			if (!started) {
+				closeHomeTerminal();
+			}
+			return started;
+		},
+		[closeHomeTerminal, currentProjectId, startHomeTerminalSession],
+	);
 
 	const handleToggleHomeTerminal = useCallback(() => {
 		if (isHomeTerminalOpen) {
@@ -508,6 +534,7 @@ export function useTerminalPanels({
 		handleToggleExpandHomeTerminal,
 		handleToggleExpandDetailTerminal,
 		handleToggleHomeTerminal,
+		startInteractiveAgentSession,
 		handleToggleDetailTerminal,
 		handleSendAgentCommandToHomeTerminal,
 		handleSendAgentCommandToDetailTerminal,

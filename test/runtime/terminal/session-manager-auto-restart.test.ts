@@ -83,6 +83,31 @@ describe("TerminalSessionManager auto-restart", () => {
 		manager.stopTaskSession("task-2");
 	});
 
+	it("lets a task environment override adapter-injected credentials", async () => {
+		prepareAgentLaunchMock.mockResolvedValue({
+			binary: "codex",
+			args: [],
+			env: { OPENAI_API_KEY: "adapter-key" },
+		});
+		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => createMockPtySession(333, request));
+		const manager = new TerminalSessionManager();
+
+		await manager.startTaskSession({
+			taskId: "task-override",
+			agentId: "codex",
+			binary: "codex",
+			args: [],
+			cwd: "/tmp/task-override",
+			prompt: "Build",
+			env: { OPENAI_API_KEY: "task-key" },
+		});
+
+		expect(ptySessionSpawnMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({ env: expect.objectContaining({ OPENAI_API_KEY: "task-key" }) }),
+		);
+		manager.stopTaskSession("task-override");
+	});
+
 	it("restarts an attached agent session after it exits", async () => {
 		const spawnedSessions: Array<ReturnType<typeof createMockPtySession>> = [];
 		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {

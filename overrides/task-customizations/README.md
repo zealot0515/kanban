@@ -8,6 +8,9 @@
 - 開啟 `Use extra environment variables` 後新增名稱與值；關閉後保留設定但不注入。值直接傳入子程序，無需 shell 引號，亦不展開 `$VAR`。同名值覆蓋 Kanban 繼承的環境，僅作用於該 CLI 與它的子程序。Kanban 的 hook／terminal 內部變數仍由程式管理。
 - 環境變數與模型可在 Backlog 任務的編輯表單修改，下次啟動生效；自動重啟與從 Done 還原時也會帶入。原生 Cline SDK 不使用 CLI 環境變數設定。
 - 環境變數會以**未加密文字**儲存在任務資料中；密碼欄只隱藏畫面顯示。不要把含機密的任務資料分享出去。
+- Settings 的 **Launch profiles** 可預先保存環境變數與 CLI 參數；值使用 AES-256-GCM 加密，macOS 優先把金鑰放在 Keychain，設定頁與 task 表單只顯示變數是否已設定，不回傳 secret。啟動 task 時 profile 變數先套用，task 變數後套用，因此 task 可以覆蓋 profile。
+- CLI 參數可以在 profile 或 task 的 Additional CLI arguments 中逐行輸入，例如 Codex 的 `-c` 與 `model_context_window=100000`；程式會以 argv 傳入，不經 shell 展開。
+- 新增 task 時若 prompt 留白直接按 **Start**，會在 home terminal 開啟選定的 Codex／Claude CLI，不建立卡片、不送出 prompt，方便先在 CLI 內切換 model 或設定；輸入 prompt 時仍使用原本建立 task 並啟動的流程。
 - 每一欄的卡片都可用鉛筆改名、標籤按鈕新增／移除 label。改名不改 prompt。
 - 卡片模型優先顯示執行階段回報（Codex `turn_context`、Claude 主 session 的 assistant transcript），其次顯示啟動時指定的模型。CLI 尚未回報預設模型時顯示 `CLI default (not reported)`。更換 CLI 內模型後，下一次相關記錄／hook 回報會更新；顯示不保證涵蓋 CLI 自己啟動的子代理模型。
 

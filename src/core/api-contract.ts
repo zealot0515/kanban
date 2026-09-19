@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { launchProfileSaveSchema, launchProfileSummarySchema } from "./launch-profiles";
 import { taskOverridesSchema } from "./task-overrides";
 import { resolveTaskTitle } from "./task-title.js";
 
+export type { LaunchProfileSave, LaunchProfileSummary } from "./launch-profiles";
 export type { TaskOverrides } from "./task-overrides";
 
 export const runtimeWorkspaceFileStatusSchema = z.enum([
@@ -961,6 +963,7 @@ export const runtimeConfigResponseSchema = z.object({
 	openPrPromptTemplate: z.string(),
 	commitPromptTemplateDefault: z.string(),
 	openPrPromptTemplateDefault: z.string(),
+	launchProfiles: z.array(launchProfileSummarySchema).optional(),
 });
 export type RuntimeConfigResponse = z.infer<typeof runtimeConfigResponseSchema>;
 
@@ -972,6 +975,7 @@ export const runtimeConfigSaveRequestSchema = z.object({
 	readyForReviewNotificationsEnabled: z.boolean().optional(),
 	commitPromptTemplate: z.string().optional(),
 	openPrPromptTemplate: z.string().optional(),
+	launchProfiles: z.array(launchProfileSaveSchema).max(50).optional(),
 });
 export type RuntimeConfigSaveRequest = z.infer<typeof runtimeConfigSaveRequestSchema>;
 
@@ -1117,6 +1121,8 @@ export const runtimeShellSessionStartRequestSchema = z.object({
 	rows: z.number().int().positive().optional(),
 	workspaceTaskId: z.string().optional(),
 	baseRef: z.string(),
+	agentId: runtimeAgentIdSchema.optional(),
+	taskOverrides: taskOverridesSchema.optional(),
 });
 export type RuntimeShellSessionStartRequest = z.infer<typeof runtimeShellSessionStartRequestSchema>;
 

@@ -17,6 +17,7 @@ import {
 	ExternalLink,
 	FolderOpen,
 	GitCommit,
+	KeyRound,
 	Palette,
 	Plus,
 	Settings,
@@ -44,6 +45,7 @@ import { previewThemeId, readStoredThemeId, saveThemeId, THEME_GROUPS, THEMES, t
 import { useLayoutCustomizations } from "@/resize/layout-customizations";
 import { openFileOnHost } from "@/runtime/runtime-config-query";
 import type {
+	LaunchProfileSummary,
 	RuntimeAgentId,
 	RuntimeClineMcpServerAuthStatus,
 	RuntimeConfigResponse,
@@ -90,11 +92,44 @@ const GIT_PROMPT_VARIANT_OPTIONS: Array<{ value: TaskGitAction; label: string }>
 	{ value: "pr", label: "Make PR" },
 ];
 
+function launchProfileDraftFromSummary(profile: LaunchProfileSummary): LaunchProfileDraft {
+	return {
+		id: profile.id,
+		name: profile.name,
+		agentId: profile.agentId,
+		cliArgs: [...profile.cliArgs],
+		variables: profile.variables.map((variable) => ({
+			name: variable.name,
+			value: "",
+			configured: variable.configured,
+		})),
+	};
+}
+
+function areLaunchProfileDraftsEqual(left: LaunchProfileDraft[], right: LaunchProfileDraft[]): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export type RuntimeSettingsSection = "shortcuts";
 
 const SETTINGS_AGENT_ORDER: readonly RuntimeAgentId[] = ["cline", "claude", "codex", "droid", "kiro"];
 
-type SettingsNavId = "general" | "cline" | "git-prompts" | "notifications" | "appearance" | "project";
+type LaunchProfileDraft = {
+	id?: string;
+	name: string;
+	agentId: RuntimeAgentId | null;
+	cliArgs: string[];
+	variables: Array<{ name: string; value: string; configured: boolean }>;
+};
+
+type SettingsNavId =
+	| "general"
+	| "launch-profiles"
+	| "cline"
+	| "git-prompts"
+	| "notifications"
+	| "appearance"
+	| "project";
 
 const SETTINGS_NAV_ITEMS: ReadonlyArray<{
 	id: SettingsNavId;
@@ -103,6 +138,7 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
 	clineOnly?: boolean;
 }> = [
 	{ id: "general", label: "General", icon: <SlidersHorizontal size={16} /> },
+	{ id: "launch-profiles", label: "Launch profiles", icon: <KeyRound size={16} /> },
 	{ id: "cline", label: "Cline", icon: <Bot size={16} />, clineOnly: true },
 	{ id: "git-prompts", label: "Git Prompts", icon: <GitCommit size={16} /> },
 	{ id: "notifications", label: "Notifications", icon: <Bell size={16} /> },
@@ -373,6 +409,7 @@ export function RuntimeSettingsDialog({
 	const [draftThemeId, setDraftThemeId] = useState<ThemeId>(readStoredThemeId);
 	const [notificationPermission, setNotificationPermission] = useState<BrowserNotificationPermission>("unsupported");
 	const [shortcuts, setShortcuts] = useState<RuntimeProjectShortcut[]>([]);
+	const [launchProfiles, setLaunchProfiles] = useState<LaunchProfileDraft[]>([]);
 	const [commitPromptTemplate, setCommitPromptTemplate] = useState("");
 	const [openPrPromptTemplate, setOpenPrPromptTemplate] = useState("");
 	const [selectedPromptVariant, setSelectedPromptVariant] = useState<TaskGitAction>("commit");
@@ -443,6 +480,10 @@ export function RuntimeSettingsDialog({
 	const initialAgentAutonomousModeEnabled = config?.agentAutonomousModeEnabled ?? true;
 	const initialReadyForReviewNotificationsEnabled = config?.readyForReviewNotificationsEnabled ?? true;
 	const initialShortcuts = config?.shortcuts ?? [];
+	const initialLaunchProfiles = useMemo(
+		() => (config?.launchProfiles ?? []).map(launchProfileDraftFromSummary),
+		[config?.launchProfiles],
+	);
 	const initialCommitPromptTemplate = config?.commitPromptTemplate ?? "";
 	const initialOpenPrPromptTemplate = config?.openPrPromptTemplate ?? "";
 	const clineSettings = useRuntimeSettingsClineController({
@@ -482,6 +523,9 @@ export function RuntimeSettingsDialog({
 		if (!areRuntimeProjectShortcutsEqual(shortcuts, initialShortcuts)) {
 			return true;
 		}
+		if (!areLaunchProfileDraftsEqual(launchProfiles, initialLaunchProfiles)) {
+			return true;
+		}
 		if (
 			normalizeTemplateForComparison(commitPromptTemplate) !==
 			normalizeTemplateForComparison(initialCommitPromptTemplate)
@@ -505,11 +549,13 @@ export function RuntimeSettingsDialog({
 		initialReadyForReviewNotificationsEnabled,
 		initialSelectedAgentId,
 		initialShortcuts,
+		initialLaunchProfiles,
 		initialThemeId,
 		openPrPromptTemplate,
 		readyForReviewNotificationsEnabled,
 		selectedAgentId,
 		shortcuts,
+		launchProfiles,
 	]);
 
 	useEffect(() => {
@@ -520,6 +566,7 @@ export function RuntimeSettingsDialog({
 		setAgentAutonomousModeEnabled(config?.agentAutonomousModeEnabled ?? true);
 		setReadyForReviewNotificationsEnabled(config?.readyForReviewNotificationsEnabled ?? true);
 		setShortcuts(config?.shortcuts ?? []);
+		setLaunchProfiles((config?.launchProfiles ?? []).map(launchProfileDraftFromSummary));
 		setCommitPromptTemplate(config?.commitPromptTemplate ?? "");
 		setOpenPrPromptTemplate(config?.openPrPromptTemplate ?? "");
 		setSaveError(null);
@@ -530,6 +577,7 @@ export function RuntimeSettingsDialog({
 		config?.readyForReviewNotificationsEnabled,
 		config?.selectedAgentId,
 		config?.shortcuts,
+		config?.launchProfiles,
 		fallbackAgentId,
 		open,
 	]);
@@ -697,6 +745,22 @@ export function RuntimeSettingsDialog({
 				return;
 			}
 		}
+		if (launchProfiles.some((profile) => profile.name.trim().length === 0)) {
+			setSaveError("Every launch profile needs a name.");
+			return;
+		}
+		const launchProfilePayload = launchProfiles.map((profile) => ({
+			...(profile.id ? { id: profile.id } : {}),
+			name: profile.name.trim(),
+			agentId: profile.agentId,
+			cliArgs: profile.cliArgs,
+			variables: profile.variables
+				.filter((variable) => variable.name.trim().length > 0)
+				.map((variable) => ({
+					name: variable.name.trim(),
+					value: variable.configured && variable.value.length === 0 ? undefined : variable.value,
+				})),
+		}));
 		const saved = await save({
 			selectedAgentId,
 			agentAutonomousModeEnabled,
@@ -704,6 +768,7 @@ export function RuntimeSettingsDialog({
 			shortcuts,
 			commitPromptTemplate,
 			openPrPromptTemplate,
+			launchProfiles: launchProfilePayload,
 		});
 		if (!saved) {
 			setSaveError("Could not save runtime settings. Check runtime logs and try again.");
@@ -756,6 +821,29 @@ export function RuntimeSettingsDialog({
 	);
 
 	const currentThemeDef = THEMES.find((t) => t.id === draftThemeId);
+	const updateLaunchProfile = (profileIndex: number, patch: Partial<LaunchProfileDraft>) => {
+		setLaunchProfiles((current) =>
+			current.map((profile, index) => (index === profileIndex ? { ...profile, ...patch } : profile)),
+		);
+	};
+	const updateLaunchProfileVariable = (
+		profileIndex: number,
+		variableIndex: number,
+		patch: Partial<LaunchProfileDraft["variables"][number]>,
+	) => {
+		setLaunchProfiles((current) =>
+			current.map((profile, index) =>
+				index === profileIndex
+					? {
+							...profile,
+							variables: profile.variables.map((variable, itemIndex) =>
+								itemIndex === variableIndex ? { ...variable, ...patch } : variable,
+							),
+						}
+					: profile,
+			),
+		);
+	};
 
 	return (
 		<Dialog open={open} onOpenChange={handleDialogOpenChange} contentClassName="!max-w-[780px]">
@@ -812,6 +900,160 @@ export function RuntimeSettingsDialog({
 						<p className="text-text-secondary text-[13px] ml-6 mt-0 mb-0">
 							Allows agents to use tools without stopping for permission. Use at your own risk.
 						</p>
+					</div>
+
+					{/* ---- Launch profiles ---- */}
+					<div data-settings-section="launch-profiles" />
+					<div className="sticky top-0 -mx-5 px-5 pt-4 pb-2 bg-surface-1 z-10">
+						<h2 className="flex items-center gap-2 text-base font-semibold text-text-primary m-0">
+							<KeyRound size={16} className="text-text-secondary" />
+							Launch profiles
+						</h2>
+					</div>
+					<div className="rounded-lg border border-border bg-surface-0 px-4 py-3 mb-4">
+						<p className="text-text-secondary text-[13px] mt-0 mb-3">
+							Save encrypted environment variables and CLI arguments, then select a profile when starting a task.
+							Values are never returned to the browser after they are saved.
+						</p>
+						<div className="flex justify-end mb-2">
+							<Button
+								size="sm"
+								icon={<Plus size={14} />}
+								onClick={() =>
+									setLaunchProfiles((current) => [
+										...current,
+										{ name: "", agentId: null, cliArgs: [], variables: [] },
+									])
+								}
+								disabled={controlsDisabled || launchProfiles.length >= 50}
+							>
+								Add profile
+							</Button>
+						</div>
+						<div className="space-y-3">
+							{launchProfiles.map((profile, profileIndex) => (
+								<div
+									key={profile.id ?? profileIndex}
+									className="rounded-md border border-border-bright bg-surface-1 p-3 space-y-2"
+								>
+									<div className="flex items-center gap-2">
+										<input
+											value={profile.name}
+											onChange={(event) => updateLaunchProfile(profileIndex, { name: event.target.value })}
+											placeholder="Profile name"
+											className="h-8 min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
+										/>
+										<NativeSelect
+											value={profile.agentId ?? "all"}
+											onChange={(event) =>
+												updateLaunchProfile(profileIndex, {
+													agentId:
+														event.target.value === "all" ? null : (event.target.value as RuntimeAgentId),
+												})
+											}
+										>
+											<option value="all">All agents</option>
+											{getRuntimeLaunchSupportedAgentCatalog()
+												.filter((agent) => agent.id !== "cline")
+												.map((agent) => (
+													<option key={agent.id} value={agent.id}>
+														{agent.label}
+													</option>
+												))}
+										</NativeSelect>
+										<Button
+											variant="ghost"
+											size="sm"
+											icon={<X size={14} />}
+											aria-label={`Remove launch profile ${profile.name}`}
+											onClick={() =>
+												setLaunchProfiles((current) => current.filter((_, index) => index !== profileIndex))
+											}
+										/>
+									</div>
+									<textarea
+										value={profile.cliArgs.join("\n")}
+										rows={2}
+										placeholder={"CLI arguments, one per line, e.g.\n-c\nmodel_context_window=100000"}
+										onChange={(event) =>
+											updateLaunchProfile(profileIndex, {
+												cliArgs: event.target.value.split("\n").filter((arg) => arg.length > 0),
+											})
+										}
+										className="w-full resize-y rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
+									/>
+									<div className="space-y-1">
+										{profile.variables.map((variable, variableIndex) => (
+											<div key={variableIndex} className="flex gap-1">
+												<input
+													value={variable.name}
+													onChange={(event) =>
+														updateLaunchProfileVariable(profileIndex, variableIndex, {
+															name: event.target.value,
+														})
+													}
+													placeholder="NAME"
+													className="w-2/5 min-w-0 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
+												/>
+												<input
+													value={variable.value}
+													type="password"
+													autoComplete="off"
+													placeholder={variable.configured ? "Saved value (blank keeps it)" : "Value"}
+													onChange={(event) =>
+														updateLaunchProfileVariable(profileIndex, variableIndex, {
+															value: event.target.value,
+															configured: true,
+														})
+													}
+													className="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
+												/>
+												<Button
+													variant="ghost"
+													size="sm"
+													icon={<X size={14} />}
+													aria-label={`Remove variable ${variable.name}`}
+													onClick={() =>
+														setLaunchProfiles((current) =>
+															current.map((item, index) =>
+																index === profileIndex
+																	? {
+																			...item,
+																			variables: item.variables.filter(
+																				(_, entryIndex) => entryIndex !== variableIndex,
+																			),
+																		}
+																	: item,
+															),
+														)
+													}
+												/>
+											</div>
+										))}
+										<div className="flex gap-2">
+											<Button
+												size="sm"
+												icon={<Plus size={14} />}
+												onClick={() =>
+													updateLaunchProfile(profileIndex, {
+														variables: [...profile.variables, { name: "", value: "", configured: false }],
+													})
+												}
+												disabled={profile.variables.length >= 100}
+											>
+												Add variable
+											</Button>
+											<span className="self-center text-[11px] text-text-tertiary">
+												Blank saved values keep the encrypted secret.
+											</span>
+										</div>
+									</div>
+								</div>
+							))}
+							{launchProfiles.length === 0 ? (
+								<p className="text-text-secondary text-[13px]">No launch profiles configured.</p>
+							) : null}
+						</div>
 					</div>
 
 					{/* ---- Cline ---- */}

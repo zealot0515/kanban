@@ -1,14 +1,24 @@
 import type { RuntimeAgentId } from "../core/api-contract";
+import type { StoredLaunchProfile } from "../core/launch-profiles";
 import { type TaskOverrides, taskOverridesSchema } from "../core/task-overrides";
 
 /** Keep launch overrides in argv/env; never interpolate them into shell commands. */
-export function resolveTaskLaunchOverrides(agentId: RuntimeAgentId, args: string[], overrides?: TaskOverrides) {
+export function resolveTaskLaunchOverrides(
+	agentId: RuntimeAgentId,
+	args: string[],
+	overrides?: TaskOverrides,
+	profile?: StoredLaunchProfile | null,
+) {
 	const settings = overrides === undefined ? undefined : taskOverridesSchema.parse(overrides);
+	if (agentId === "cline") {
+		return { args: [...args], env: undefined, modelId: null };
+	}
 	const cliModel = settings?.cliModel?.trim();
 	const supportsModel = agentId === "codex" || agentId === "claude";
 	const nextArgs: string[] = [];
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index];
+	const configuredArgs = [...(profile?.cliArgs ?? []), ...(settings?.cliArgs ?? []), ...args];
+	for (let index = 0; index < configuredArgs.length; index++) {
+		const arg = configuredArgs[index];
 		if (supportsModel && cliModel) {
 			if (arg === "--model" || arg === "-m") {
 				index++;
@@ -19,9 +29,15 @@ export function resolveTaskLaunchOverrides(agentId: RuntimeAgentId, args: string
 		nextArgs.push(arg);
 	}
 	if (supportsModel && cliModel) nextArgs.unshift("--model", cliModel);
+	const profileEnvironment = profile
+		? Object.fromEntries(profile.variables.map(({ name, value }) => [name, value]))
+		: {};
+	const taskEnvironment = settings?.environment?.enabled
+		? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
+		: {};
 	const environment =
-		agentId !== "cline" && settings?.environment?.enabled
-			? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
+		Object.keys(profileEnvironment).length > 0 || Object.keys(taskEnvironment).length > 0
+			? { ...profileEnvironment, ...taskEnvironment }
 			: undefined;
 	let modelId: string | null = null;
 	if (supportsModel) {

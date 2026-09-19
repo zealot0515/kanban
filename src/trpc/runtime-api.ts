@@ -12,6 +12,7 @@ import { createClineMcpSettingsService } from "../cline-sdk/cline-mcp-settings-s
 import { createClineProviderService } from "../cline-sdk/cline-provider-service";
 import { isClineClearSlashCommand } from "../cline-sdk/cline-slash-commands";
 import type { ClineTaskSessionService } from "../cline-sdk/cline-task-session-service";
+import { loadLaunchProfileSummaries, resolveLaunchProfile, saveLaunchProfiles } from "../config/launch-profiles";
 import type { RuntimeConfigState } from "../config/runtime-config";
 import { updateGlobalRuntimeConfig, updateRuntimeConfig } from "../config/runtime-config";
 import type {
@@ -106,8 +107,12 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		join(homedir(), ".cline", "worktrees"),
 	] as const;
 
-	const buildConfigResponse = (runtimeConfig: RuntimeConfigState) =>
-		buildRuntimeConfigResponse(runtimeConfig, clineProviderService.getProviderSettingsSummary());
+	const buildConfigResponse = async (runtimeConfig: RuntimeConfigState) =>
+		buildRuntimeConfigResponse(
+			runtimeConfig,
+			clineProviderService.getProviderSettingsSummary(),
+			await loadLaunchProfileSummaries(),
+		);
 
 	return {
 		loadConfig: async (workspaceScope) => {
@@ -123,7 +128,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			} else {
 				throw new Error("No active runtime config provider is available.");
 			}
-			return buildConfigResponse(scopedRuntimeConfig);
+			return await buildConfigResponse(scopedRuntimeConfig);
 		},
 		saveConfig: async (workspaceScope, input) => {
 			const parsed = parseRuntimeConfigSaveRequest(input);
@@ -140,13 +145,16 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				}
 				nextRuntimeConfig = await updateGlobalRuntimeConfig(activeRuntimeConfig, parsed);
 			}
+			if (parsed.launchProfiles !== undefined) {
+				await saveLaunchProfiles(parsed.launchProfiles);
+			}
 			if (workspaceScope && workspaceScope.workspaceId === deps.getActiveWorkspaceId()) {
 				deps.setActiveRuntimeConfig(nextRuntimeConfig);
 			}
 			if (!workspaceScope) {
 				deps.setActiveRuntimeConfig(nextRuntimeConfig);
 			}
-			return buildConfigResponse(nextRuntimeConfig);
+			return await buildConfigResponse(nextRuntimeConfig);
 		},
 		saveClineProviderSettings: async (_workspaceScope, input) => {
 			const body = parseClineProviderSettingsSaveRequest(input);
@@ -279,7 +287,19 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						error: "No runnable agent command is configured. Open Settings, install a supported CLI, and select it.",
 					};
 				}
-				const launchOverrides = resolveTaskLaunchOverrides(resolved.agentId, resolved.args, body.taskOverrides);
+				const launchProfile = await resolveLaunchProfile(body.taskOverrides?.launchProfileId);
+				if (body.taskOverrides?.launchProfileId && !launchProfile) {
+					throw new Error(`Launch profile "${body.taskOverrides.launchProfileId}" was not found.`);
+				}
+				if (launchProfile?.agentId && launchProfile.agentId !== resolved.agentId) {
+					throw new Error(`Launch profile "${launchProfile.name}" is configured for ${launchProfile.agentId}.`);
+				}
+				const launchOverrides = resolveTaskLaunchOverrides(
+					resolved.agentId,
+					resolved.args,
+					body.taskOverrides,
+					launchProfile,
+				);
 				const summary = await terminalManager.startTaskSession({
 					taskId: body.taskId,
 					agentId: resolved.agentId,
@@ -662,7 +682,43 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			try {
 				const body = parseShellSessionStartRequest(input);
 				const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
-				const shell = deps.resolveInteractiveShellCommand();
+				let binary: string;
+				let args: string[];
+				let env: Record<string, string | undefined> | undefined;
+				let sessionAgentId: RuntimeConfigState["selectedAgentId"] | null = null;
+				let modelId: string | null = null;
+				if (body.agentId) {
+					if (body.agentId === "cline") {
+						throw new Error("Cline uses the native task chat and does not expose an interactive CLI session.");
+					}
+					const scopedRuntimeConfig = await deps.loadScopedRuntimeConfig(workspaceScope);
+					const resolved = resolveAgentCommand({ ...scopedRuntimeConfig, selectedAgentId: body.agentId });
+					if (!resolved) {
+						throw new Error(`The ${body.agentId} CLI is not installed or cannot be found on PATH.`);
+					}
+					const launchProfile = await resolveLaunchProfile(body.taskOverrides?.launchProfileId);
+					if (body.taskOverrides?.launchProfileId && !launchProfile) {
+						throw new Error(`Launch profile "${body.taskOverrides.launchProfileId}" was not found.`);
+					}
+					if (launchProfile?.agentId && launchProfile.agentId !== resolved.agentId) {
+						throw new Error(`Launch profile "${launchProfile.name}" is configured for ${launchProfile.agentId}.`);
+					}
+					const launchOverrides = resolveTaskLaunchOverrides(
+						resolved.agentId,
+						resolved.args,
+						body.taskOverrides,
+						launchProfile,
+					);
+					binary = resolved.binary;
+					args = launchOverrides.args;
+					env = launchOverrides.env;
+					sessionAgentId = resolved.agentId;
+					modelId = launchOverrides.modelId;
+				} else {
+					const shell = deps.resolveInteractiveShellCommand();
+					binary = shell.binary;
+					args = shell.args;
+				}
 				const shellCwd = body.workspaceTaskId
 					? await resolveTaskCwd({
 							cwd: workspaceScope.workspacePath,
@@ -671,18 +727,24 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 							ensure: true,
 						})
 					: workspaceScope.workspacePath;
+				if (body.agentId) {
+					terminalManager.stopTaskSession(body.taskId);
+				}
 				const summary = await terminalManager.startShellSession({
 					taskId: body.taskId,
 					cwd: shellCwd,
 					cols: body.cols,
 					rows: body.rows,
-					binary: shell.binary,
-					args: shell.args,
+					binary,
+					args,
+					env,
+					agentId: sessionAgentId,
+					modelId,
 				});
 				return {
 					ok: true,
 					summary,
-					shellBinary: shell.binary,
+					shellBinary: binary,
 				};
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

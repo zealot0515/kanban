@@ -447,6 +447,53 @@ describe("createRuntimeApi startTaskSession", () => {
 		);
 	});
 
+	it("starts an empty interactive agent session with task launch settings", async () => {
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
+			agentId: "codex",
+			label: "OpenAI Codex",
+			command: "codex",
+			binary: "codex",
+			args: [],
+		});
+		const terminalManager = {
+			stopTaskSession: vi.fn(),
+			startShellSession: vi.fn(async () => createSummary({ taskId: "__home_terminal__", agentId: "codex" })),
+		};
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const result = await api.startShellSession(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{
+				taskId: "__home_terminal__",
+				baseRef: "main",
+				agentId: "codex",
+				taskOverrides: {
+					cliArgs: ["-c", "model_context_window=100000"],
+					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
+				},
+			},
+		);
+
+		expect(result.ok).toBe(true);
+		expect(terminalManager.stopTaskSession).toHaveBeenCalledWith("__home_terminal__");
+		expect(terminalManager.startShellSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				binary: "codex",
+				args: ["-c", "model_context_window=100000"],
+				env: { OPENAI_API_KEY: "task-key" },
+				agentId: "codex",
+			}),
+		);
+	});
+
 	it("reuses an existing worktree path before falling back to ensure", async () => {
 		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
 

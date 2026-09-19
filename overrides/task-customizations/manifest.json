@@ -34,6 +34,14 @@
     "web-ui/src/hooks/use-task-editor.ts",
     "web-ui/src/hooks/use-task-sessions.ts",
     "web-ui/src/state/board-state.ts",
-    "web-ui/src/types/board.ts"
+    "web-ui/src/types/board.ts",
+    "src/config/launch-profiles.ts",
+    "src/terminal/agent-registry.ts",
+    "src/core/launch-profiles.ts",
+    "test/runtime/launch-profiles.test.ts",
+    "web-ui/src/components/runtime-settings-dialog.tsx",
+    "web-ui/src/hooks/use-terminal-panels.ts",
+    "web-ui/src/runtime/runtime-config-query.ts",
+    "web-ui/src/runtime/use-runtime-config.ts"
   ]
 }

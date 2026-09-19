@@ -115,20 +115,22 @@ index db2bc653b02dd8a139f80847d103fcbdb6ca84e8..10b1191caa5bcbb13936a0c0f0708897
  		if (!started.ok || !started.summary) {
  			throw new Error(started.error ?? "Could not start task session.");
 diff --git a/src/core/api-contract.ts b/src/core/api-contract.ts
-index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..2a6867bcae5d761204828a243aca8620e8a9a642 100644
+index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..6fe9129b54a6857e73363c8f0742a1cc3859a019 100644
 --- a/src/core/api-contract.ts
 +++ b/src/core/api-contract.ts
-@@ -1,6 +1,9 @@
+@@ -1,6 +1,11 @@
  import { z } from "zod";
++import { launchProfileSaveSchema, launchProfileSummarySchema } from "./launch-profiles";
 +import { taskOverridesSchema } from "./task-overrides";
  import { resolveTaskTitle } from "./task-title.js";
  
++export type { LaunchProfileSave, LaunchProfileSummary } from "./launch-profiles";
 +export type { TaskOverrides } from "./task-overrides";
 +
  export const runtimeWorkspaceFileStatusSchema = z.enum([
  	"modified",
  	"added",
-@@ -140,6 +143,7 @@ export const runtimeBoardCardSchema = z
+@@ -140,6 +145,7 @@ export const runtimeBoardCardSchema = z
  		images: z.array(runtimeTaskImageSchema).optional(),
  		agentId: runtimeAgentIdSchema.optional(),
  		clineSettings: runtimeTaskClineSettingsSchema.optional(),
@@ -136,7 +138,7 @@ index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..2a6867bcae5d761204828a243aca8620
  		clineProviderId: z.string().optional(),
  		clineModelId: z.string().optional(),
  		clineReasoningEffort: runtimeLegacyTaskClineReasoningEffortSchema.optional(),
-@@ -261,6 +265,7 @@ export const runtimeTaskSessionReviewReasonSchema = z
+@@ -261,6 +267,7 @@ export const runtimeTaskSessionReviewReasonSchema = z
  export type RuntimeTaskSessionReviewReason = z.infer<typeof runtimeTaskSessionReviewReasonSchema>;
  
  export const runtimeTaskHookActivitySchema = z.object({
@@ -144,7 +146,7 @@ index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..2a6867bcae5d761204828a243aca8620
  	activityText: z.string().nullable().default(null),
  	toolName: z.string().nullable().default(null),
  	toolInputSummary: z.string().nullable().default(null),
-@@ -280,6 +285,7 @@ export const runtimeTaskTurnCheckpointSchema = z.object({
+@@ -280,6 +287,7 @@ export const runtimeTaskTurnCheckpointSchema = z.object({
  export type RuntimeTaskTurnCheckpoint = z.infer<typeof runtimeTaskTurnCheckpointSchema>;
  
  export const runtimeTaskSessionSummarySchema = z.object({
@@ -152,13 +154,38 @@ index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..2a6867bcae5d761204828a243aca8620
  	taskId: z.string(),
  	state: runtimeTaskSessionStateSchema,
  	mode: runtimeTaskSessionModeSchema.nullable().optional(),
-@@ -983,6 +989,7 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
+@@ -955,6 +963,7 @@ export const runtimeConfigResponseSchema = z.object({
+ 	openPrPromptTemplate: z.string(),
+ 	commitPromptTemplateDefault: z.string(),
+ 	openPrPromptTemplateDefault: z.string(),
++	launchProfiles: z.array(launchProfileSummarySchema).optional(),
+ });
+ export type RuntimeConfigResponse = z.infer<typeof runtimeConfigResponseSchema>;
+ 
+@@ -966,6 +975,7 @@ export const runtimeConfigSaveRequestSchema = z.object({
+ 	readyForReviewNotificationsEnabled: z.boolean().optional(),
+ 	commitPromptTemplate: z.string().optional(),
+ 	openPrPromptTemplate: z.string().optional(),
++	launchProfiles: z.array(launchProfileSaveSchema).max(50).optional(),
+ });
+ export type RuntimeConfigSaveRequest = z.infer<typeof runtimeConfigSaveRequestSchema>;
+ 
+@@ -983,6 +993,7 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
  	rows: z.number().int().positive().optional(),
  	agentId: runtimeAgentIdSchema.optional(),
  	clineSettings: runtimeTaskClineSettingsSchema.optional(),
 +	taskOverrides: taskOverridesSchema.optional(),
  });
  export type RuntimeTaskSessionStartRequest = z.infer<typeof runtimeTaskSessionStartRequestSchema>;
+ 
+@@ -1110,6 +1121,8 @@ export const runtimeShellSessionStartRequestSchema = z.object({
+ 	rows: z.number().int().positive().optional(),
+ 	workspaceTaskId: z.string().optional(),
+ 	baseRef: z.string(),
++	agentId: runtimeAgentIdSchema.optional(),
++	taskOverrides: taskOverridesSchema.optional(),
+ });
+ export type RuntimeShellSessionStartRequest = z.infer<typeof runtimeShellSessionStartRequestSchema>;
  
 diff --git a/src/core/task-board-mutations.ts b/src/core/task-board-mutations.ts
 index 8ae5e93711507106a311f0ea62dffa0523d555b1..e690d16a3d24e8d03beb6aa3086872b9d3be3ef0 100644
@@ -208,8 +235,35 @@ index 8ae5e93711507106a311f0ea62dffa0523d555b1..e690d16a3d24e8d03beb6aa3086872b9
  				agentId: input.agentId === undefined ? card.agentId : (input.agentId ?? undefined),
  				clineSettings:
  					input.clineSettings === undefined
+diff --git a/src/terminal/agent-registry.ts b/src/terminal/agent-registry.ts
+index 4775a128b6e1c909a270a07a38920a735a5ac6f1..1f5533c7d68410c304e3fc8f98bdcac0b832d02b 100644
+--- a/src/terminal/agent-registry.ts
++++ b/src/terminal/agent-registry.ts
+@@ -6,6 +6,7 @@ import type {
+ 	RuntimeClineProviderSettings,
+ 	RuntimeConfigResponse,
+ } from "../core/api-contract";
++import type { LaunchProfileSummary } from "../core/launch-profiles";
+ import { isBinaryAvailableOnPath } from "./command-discovery";
+ 
+ export interface ResolvedAgentCommand {
+@@ -101,6 +102,7 @@ export function resolveAgentCommand(runtimeConfig: RuntimeConfigState): Resolved
+ export function buildRuntimeConfigResponse(
+ 	runtimeConfig: RuntimeConfigState,
+ 	clineProviderSettings: RuntimeClineProviderSettings,
++	launchProfiles: LaunchProfileSummary[] = [],
+ ): RuntimeConfigResponse {
+ 	const detectedCommands = detectInstalledCommands();
+ 	const agents = getCuratedDefinitions(runtimeConfig, detectedCommands);
+@@ -124,5 +126,6 @@ export function buildRuntimeConfigResponse(
+ 		openPrPromptTemplate: runtimeConfig.openPrPromptTemplate,
+ 		commitPromptTemplateDefault: runtimeConfig.commitPromptTemplateDefault,
+ 		openPrPromptTemplateDefault: runtimeConfig.openPrPromptTemplateDefault,
++		launchProfiles,
+ 	};
+ }
 diff --git a/src/terminal/session-manager.ts b/src/terminal/session-manager.ts
-index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaad626a13f 100644
+index b196c72550ce54d93cdc5cb8f030382755428a76..313a332f6eddd75bf322771a38185ec29ce4d06b 100644
 --- a/src/terminal/session-manager.ts
 +++ b/src/terminal/session-manager.ts
 @@ -76,6 +76,7 @@ interface SessionEntry {
@@ -220,7 +274,29 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  	taskId: string;
  	agentId: AgentAdapterLaunchInput["agentId"];
  	binary: string;
-@@ -489,6 +490,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+@@ -100,6 +101,8 @@ export interface StartShellSessionRequest {
+ 	binary: string;
+ 	args?: string[];
+ 	env?: Record<string, string | undefined>;
++	agentId?: AgentAdapterLaunchInput["agentId"] | null;
++	modelId?: string | null;
+ }
+ 
+ function now(): number {
+@@ -336,7 +339,11 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 			workspaceId: request.workspaceId,
+ 		});
+ 
+-		const env = buildTerminalEnvironment(request.env, launch.env);
++		// The task/profile environment is user configuration and must win over
++		// adapter-injected values. This is especially important for credentials
++		// such as OPENAI_API_KEY, which callers intentionally use to override the
++		// inherited shell environment for one task.
++		const env = buildTerminalEnvironment(launch.env, request.env);
+ 
+ 		// Adapters can wrap the configured agent binary when they need extra runtime wiring
+ 		// (for example, Codex uses a wrapper script to watch session logs for hook transitions).
+@@ -489,6 +496,7 @@ export class TerminalSessionManager implements TerminalSessionService {
  			const summary = updateSummary(entry, {
  				state: "failed",
  				agentId: request.agentId,
@@ -228,7 +304,7 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  				workspacePath: request.cwd,
  				pid: null,
  				startedAt: null,
-@@ -533,6 +535,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+@@ -533,6 +541,7 @@ export class TerminalSessionManager implements TerminalSessionService {
  		updateSummary(entry, {
  			state: request.resumeFromTrash ? "awaiting_review" : "running",
  			agentId: request.agentId,
@@ -236,7 +312,27 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  			workspacePath: request.cwd,
  			pid: session.pid,
  			startedAt,
-@@ -817,6 +820,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+@@ -647,7 +656,8 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 			terminalStateMirror.dispose();
+ 			const summary = updateSummary(entry, {
+ 				state: "failed",
+-				agentId: null,
++				agentId: request.agentId ?? null,
++				modelId: request.modelId ?? null,
+ 				workspacePath: request.cwd,
+ 				pid: null,
+ 				startedAt: null,
+@@ -684,7 +694,8 @@ export class TerminalSessionManager implements TerminalSessionService {
+ 
+ 		updateSummary(entry, {
+ 			state: "running",
+-			agentId: null,
++			agentId: request.agentId ?? null,
++			modelId: request.modelId ?? null,
+ 			workspacePath: request.cwd,
+ 			pid: session.pid,
+ 			startedAt: now(),
+@@ -817,6 +828,7 @@ export class TerminalSessionManager implements TerminalSessionService {
  		}
  
  		const hasActivityUpdate =
@@ -244,7 +340,7 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  			typeof activity.activityText === "string" ||
  			typeof activity.toolName === "string" ||
  			typeof activity.toolInputSummary === "string" ||
-@@ -830,6 +834,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+@@ -830,6 +842,7 @@ export class TerminalSessionManager implements TerminalSessionService {
  
  		const previous = entry.summary.latestHookActivity;
  		const next: RuntimeTaskHookActivity = {
@@ -252,7 +348,7 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  			activityText:
  				typeof activity.activityText === "string" ? activity.activityText : (previous?.activityText ?? null),
  			toolName: typeof activity.toolName === "string" ? activity.toolName : (previous?.toolName ?? null),
-@@ -849,6 +854,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+@@ -849,6 +862,7 @@ export class TerminalSessionManager implements TerminalSessionService {
  		};
  
  		const didChange =
@@ -260,7 +356,7 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  			next.activityText !== (previous?.activityText ?? null) ||
  			next.toolName !== (previous?.toolName ?? null) ||
  			next.toolInputSummary !== (previous?.toolInputSummary ?? null) ||
-@@ -863,6 +869,7 @@ export class TerminalSessionManager implements TerminalSessionService {
+@@ -863,6 +877,7 @@ export class TerminalSessionManager implements TerminalSessionService {
  		const summary = updateSummary(entry, {
  			lastHookAt: now(),
  			latestHookActivity: next,
@@ -269,10 +365,18 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..06ee767ddd0757460906157397fb4aaa
  		if (entry.active) {
  			for (const listener of entry.listeners.values()) {
 diff --git a/src/trpc/runtime-api.ts b/src/trpc/runtime-api.ts
-index a494c86b97617d4c1f0f6c19b46de1c229262c1e..2a19f11320af0a5ffc10e629ad2e8684f6299d43 100644
+index a494c86b97617d4c1f0f6c19b46de1c229262c1e..0fe4d8426f4171b01cdaedc34e8629e03b2af785 100644
 --- a/src/trpc/runtime-api.ts
 +++ b/src/trpc/runtime-api.ts
-@@ -46,6 +46,7 @@ import { resolveTaskTitle } from "../core/task-title.js";
+@@ -12,6 +12,7 @@ import { createClineMcpSettingsService } from "../cline-sdk/cline-mcp-settings-s
+ import { createClineProviderService } from "../cline-sdk/cline-provider-service";
+ import { isClineClearSlashCommand } from "../cline-sdk/cline-slash-commands";
+ import type { ClineTaskSessionService } from "../cline-sdk/cline-task-session-service";
++import { loadLaunchProfileSummaries, resolveLaunchProfile, saveLaunchProfiles } from "../config/launch-profiles";
+ import type { RuntimeConfigState } from "../config/runtime-config";
+ import { updateGlobalRuntimeConfig, updateRuntimeConfig } from "../config/runtime-config";
+ import type {
+@@ -46,6 +47,7 @@ import { resolveTaskTitle } from "../core/task-title.js";
  import { openInBrowser } from "../server/browser";
  import { buildRuntimeConfigResponse, resolveAgentCommand } from "../terminal/agent-registry";
  import type { TerminalSessionManager } from "../terminal/session-manager";
@@ -280,11 +384,65 @@ index a494c86b97617d4c1f0f6c19b46de1c229262c1e..2a19f11320af0a5ffc10e629ad2e8684
  import { resolveTaskCwd } from "../workspace/task-worktree";
  import { captureTaskTurnCheckpoint } from "../workspace/turn-checkpoints";
  import type { RuntimeTrpcContext, RuntimeTrpcWorkspaceScope } from "./app-router";
-@@ -278,11 +279,12 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+@@ -105,8 +107,12 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+ 		join(homedir(), ".cline", "worktrees"),
+ 	] as const;
+ 
+-	const buildConfigResponse = (runtimeConfig: RuntimeConfigState) =>
+-		buildRuntimeConfigResponse(runtimeConfig, clineProviderService.getProviderSettingsSummary());
++	const buildConfigResponse = async (runtimeConfig: RuntimeConfigState) =>
++		buildRuntimeConfigResponse(
++			runtimeConfig,
++			clineProviderService.getProviderSettingsSummary(),
++			await loadLaunchProfileSummaries(),
++		);
+ 
+ 	return {
+ 		loadConfig: async (workspaceScope) => {
+@@ -122,7 +128,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+ 			} else {
+ 				throw new Error("No active runtime config provider is available.");
+ 			}
+-			return buildConfigResponse(scopedRuntimeConfig);
++			return await buildConfigResponse(scopedRuntimeConfig);
+ 		},
+ 		saveConfig: async (workspaceScope, input) => {
+ 			const parsed = parseRuntimeConfigSaveRequest(input);
+@@ -139,13 +145,16 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+ 				}
+ 				nextRuntimeConfig = await updateGlobalRuntimeConfig(activeRuntimeConfig, parsed);
+ 			}
++			if (parsed.launchProfiles !== undefined) {
++				await saveLaunchProfiles(parsed.launchProfiles);
++			}
+ 			if (workspaceScope && workspaceScope.workspaceId === deps.getActiveWorkspaceId()) {
+ 				deps.setActiveRuntimeConfig(nextRuntimeConfig);
+ 			}
+ 			if (!workspaceScope) {
+ 				deps.setActiveRuntimeConfig(nextRuntimeConfig);
+ 			}
+-			return buildConfigResponse(nextRuntimeConfig);
++			return await buildConfigResponse(nextRuntimeConfig);
+ 		},
+ 		saveClineProviderSettings: async (_workspaceScope, input) => {
+ 			const body = parseClineProviderSettingsSaveRequest(input);
+@@ -278,11 +287,24 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
  						error: "No runnable agent command is configured. Open Settings, install a supported CLI, and select it.",
  					};
  				}
-+				const launchOverrides = resolveTaskLaunchOverrides(resolved.agentId, resolved.args, body.taskOverrides);
++				const launchProfile = await resolveLaunchProfile(body.taskOverrides?.launchProfileId);
++				if (body.taskOverrides?.launchProfileId && !launchProfile) {
++					throw new Error(`Launch profile "${body.taskOverrides.launchProfileId}" was not found.`);
++				}
++				if (launchProfile?.agentId && launchProfile.agentId !== resolved.agentId) {
++					throw new Error(`Launch profile "${launchProfile.name}" is configured for ${launchProfile.agentId}.`);
++				}
++				const launchOverrides = resolveTaskLaunchOverrides(
++					resolved.agentId,
++					resolved.args,
++					body.taskOverrides,
++					launchProfile,
++				);
  				const summary = await terminalManager.startTaskSession({
  					taskId: body.taskId,
  					agentId: resolved.agentId,
@@ -294,6 +452,79 @@ index a494c86b97617d4c1f0f6c19b46de1c229262c1e..2a19f11320af0a5ffc10e629ad2e8684
  					autonomousModeEnabled: scopedRuntimeConfig.agentAutonomousModeEnabled,
  					cwd: taskCwd,
  					prompt: body.prompt,
+@@ -660,7 +682,43 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+ 			try {
+ 				const body = parseShellSessionStartRequest(input);
+ 				const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
+-				const shell = deps.resolveInteractiveShellCommand();
++				let binary: string;
++				let args: string[];
++				let env: Record<string, string | undefined> | undefined;
++				let sessionAgentId: RuntimeConfigState["selectedAgentId"] | null = null;
++				let modelId: string | null = null;
++				if (body.agentId) {
++					if (body.agentId === "cline") {
++						throw new Error("Cline uses the native task chat and does not expose an interactive CLI session.");
++					}
++					const scopedRuntimeConfig = await deps.loadScopedRuntimeConfig(workspaceScope);
++					const resolved = resolveAgentCommand({ ...scopedRuntimeConfig, selectedAgentId: body.agentId });
++					if (!resolved) {
++						throw new Error(`The ${body.agentId} CLI is not installed or cannot be found on PATH.`);
++					}
++					const launchProfile = await resolveLaunchProfile(body.taskOverrides?.launchProfileId);
++					if (body.taskOverrides?.launchProfileId && !launchProfile) {
++						throw new Error(`Launch profile "${body.taskOverrides.launchProfileId}" was not found.`);
++					}
++					if (launchProfile?.agentId && launchProfile.agentId !== resolved.agentId) {
++						throw new Error(`Launch profile "${launchProfile.name}" is configured for ${launchProfile.agentId}.`);
++					}
++					const launchOverrides = resolveTaskLaunchOverrides(
++						resolved.agentId,
++						resolved.args,
++						body.taskOverrides,
++						launchProfile,
++					);
++					binary = resolved.binary;
++					args = launchOverrides.args;
++					env = launchOverrides.env;
++					sessionAgentId = resolved.agentId;
++					modelId = launchOverrides.modelId;
++				} else {
++					const shell = deps.resolveInteractiveShellCommand();
++					binary = shell.binary;
++					args = shell.args;
++				}
+ 				const shellCwd = body.workspaceTaskId
+ 					? await resolveTaskCwd({
+ 							cwd: workspaceScope.workspacePath,
+@@ -669,18 +727,24 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
+ 							ensure: true,
+ 						})
+ 					: workspaceScope.workspacePath;
++				if (body.agentId) {
++					terminalManager.stopTaskSession(body.taskId);
++				}
+ 				const summary = await terminalManager.startShellSession({
+ 					taskId: body.taskId,
+ 					cwd: shellCwd,
+ 					cols: body.cols,
+ 					rows: body.rows,
+-					binary: shell.binary,
+-					args: shell.args,
++					binary,
++					args,
++					env,
++					agentId: sessionAgentId,
++					modelId,
+ 				});
+ 				return {
+ 					ok: true,
+ 					summary,
+-					shellBinary: shell.binary,
++					shellBinary: binary,
+ 				};
+ 			} catch (error) {
+ 				const message = error instanceof Error ? error.message : String(error);
 diff --git a/test/runtime/hooks-codex-watcher.test.ts b/test/runtime/hooks-codex-watcher.test.ts
 index 8def0aa2d1d53dfb602ae1aa7f969ae9c7628f8b..a69cc0129629bb80a6df0e2ae4a6eacce6634b2f 100644
 --- a/test/runtime/hooks-codex-watcher.test.ts
@@ -351,10 +582,10 @@ index 8def0aa2d1d53dfb602ae1aa7f969ae9c7628f8b..a69cc0129629bb80a6df0e2ae4a6eacc
  		const tempDir = await mkdtemp(join(tmpdir(), "kanban-codex-watcher-"));
  		const logPath = join(tempDir, "session.jsonl");
 diff --git a/test/runtime/terminal/session-manager-auto-restart.test.ts b/test/runtime/terminal/session-manager-auto-restart.test.ts
-index 61282b19a7307408083dc914ff8ec9a45df7c2d7..445c5b6152aeccdc1dadd09376a8acf2659f04fe 100644
+index 61282b19a7307408083dc914ff8ec9a45df7c2d7..b6298d37409fd613c2efc1c7eba94587e91593ff 100644
 --- a/test/runtime/terminal/session-manager-auto-restart.test.ts
 +++ b/test/runtime/terminal/session-manager-auto-restart.test.ts
-@@ -49,6 +49,40 @@ describe("TerminalSessionManager auto-restart", () => {
+@@ -49,6 +49,65 @@ describe("TerminalSessionManager auto-restart", () => {
  		}));
  	});
  
@@ -392,6 +623,31 @@ index 61282b19a7307408083dc914ff8ec9a45df7c2d7..445c5b6152aeccdc1dadd09376a8acf2
 +		manager.stopTaskSession("task-2");
 +	});
 +
++	it("lets a task environment override adapter-injected credentials", async () => {
++		prepareAgentLaunchMock.mockResolvedValue({
++			binary: "codex",
++			args: [],
++			env: { OPENAI_API_KEY: "adapter-key" },
++		});
++		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => createMockPtySession(333, request));
++		const manager = new TerminalSessionManager();
++
++		await manager.startTaskSession({
++			taskId: "task-override",
++			agentId: "codex",
++			binary: "codex",
++			args: [],
++			cwd: "/tmp/task-override",
++			prompt: "Build",
++			env: { OPENAI_API_KEY: "task-key" },
++		});
++
++		expect(ptySessionSpawnMock).toHaveBeenLastCalledWith(
++			expect.objectContaining({ env: expect.objectContaining({ OPENAI_API_KEY: "task-key" }) }),
++		);
++		manager.stopTaskSession("task-override");
++	});
++
  	it("restarts an attached agent session after it exits", async () => {
  		const spawnedSessions: Array<ReturnType<typeof createMockPtySession>> = [];
  		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {
@@ -420,10 +676,10 @@ index 3220ea46ce7fceff83bf067de35b12adf06583ae..5db815d3549a3e7f5f0167b9815cba34
  		const manager = new TerminalSessionManager();
  		manager.hydrateFromRecord({
 diff --git a/test/runtime/trpc/runtime-api.test.ts b/test/runtime/trpc/runtime-api.test.ts
-index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..c581254a6c85e2beaea6c0547936aeec1999235e 100644
+index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..ba05c1bbac31a5754c8f5e0d343a00dc13f0cdd5 100644
 --- a/test/runtime/trpc/runtime-api.test.ts
 +++ b/test/runtime/trpc/runtime-api.test.ts
-@@ -413,6 +413,40 @@ describe("createRuntimeApi startTaskSession", () => {
+@@ -413,6 +413,87 @@ describe("createRuntimeApi startTaskSession", () => {
  		rmSync(`${mcpOauthSettingsPath}.lock`, { force: true });
  	});
  
@@ -461,11 +717,58 @@ index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..c581254a6c85e2beaea6c0547936aeec
 +		);
 +	});
 +
++	it("starts an empty interactive agent session with task launch settings", async () => {
++		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
++			agentId: "codex",
++			label: "OpenAI Codex",
++			command: "codex",
++			binary: "codex",
++			args: [],
++		});
++		const terminalManager = {
++			stopTaskSession: vi.fn(),
++			startShellSession: vi.fn(async () => createSummary({ taskId: "__home_terminal__", agentId: "codex" })),
++		};
++		const api = createTestRuntimeApi({
++			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
++			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
++			setActiveRuntimeConfig: vi.fn(),
++			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
++			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
++			resolveInteractiveShellCommand: vi.fn(),
++			runCommand: vi.fn(),
++		});
++
++		const result = await api.startShellSession(
++			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
++			{
++				taskId: "__home_terminal__",
++				baseRef: "main",
++				agentId: "codex",
++				taskOverrides: {
++					cliArgs: ["-c", "model_context_window=100000"],
++					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
++				},
++			},
++		);
++
++		expect(result.ok).toBe(true);
++		expect(terminalManager.stopTaskSession).toHaveBeenCalledWith("__home_terminal__");
++		expect(terminalManager.startShellSession).toHaveBeenCalledWith(
++			expect.objectContaining({
++				binary: "codex",
++				args: ["-c", "model_context_window=100000"],
++				env: { OPENAI_API_KEY: "task-key" },
++				agentId: "codex",
++			}),
++		);
++	});
++
  	it("reuses an existing worktree path before falling back to ensure", async () => {
  		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
  
 diff --git a/web-ui/src/App.tsx b/web-ui/src/App.tsx
-index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c02f1cf198 100644
+index c9faf03975807c79e5355cd28c81e65bb5ed620b..c08688dc63ad4e496632535092c7a3a83b9d6b4c 100644
 --- a/web-ui/src/App.tsx
 +++ b/web-ui/src/App.tsx
 @@ -302,6 +302,8 @@ export default function App(): ReactElement {
@@ -494,7 +797,40 @@ index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c0
  		handleCreateTask,
  		handleCreateTasks,
  		resetTaskEditorState,
-@@ -783,6 +788,8 @@ export default function App(): ReactElement {
+@@ -410,6 +415,7 @@ export default function App(): ReactElement {
+ 		handleToggleExpandHomeTerminal,
+ 		handleToggleExpandDetailTerminal,
+ 		handleToggleHomeTerminal,
++		startInteractiveAgentSession,
+ 		handleToggleDetailTerminal,
+ 		handleSendAgentCommandToHomeTerminal,
+ 		handleSendAgentCommandToDetailTerminal,
+@@ -428,6 +434,24 @@ export default function App(): ReactElement {
+ 		upsertSession,
+ 		sendTaskSessionInput,
+ 	});
++
++	const handleStartInteractiveAgent = useCallback(() => {
++		const agentId = newTaskAgentId ?? runtimeProjectConfig?.selectedAgentId ?? null;
++		if (!agentId) {
++			return;
++		}
++		void startInteractiveAgentSession(agentId, newTaskOverrides).then((started) => {
++			if (started) {
++				handleCancelCreateTask();
++			}
++		});
++	}, [
++		handleCancelCreateTask,
++		newTaskAgentId,
++		newTaskOverrides,
++		runtimeProjectConfig?.selectedAgentId,
++		startInteractiveAgentSession,
++	]);
+ 	const homeTerminalSummary = sessions[homeTerminalTaskId] ?? null;
+ 	const homeSidebarAgentPanel = useHomeSidebarAgentPanel({
+ 		currentProjectId,
+@@ -783,12 +807,15 @@ export default function App(): ReactElement {
  			onBranchRefChange={setEditTaskBranchRef}
  			agentId={editTaskAgentId}
  			onAgentIdChange={setEditTaskAgentId}
@@ -503,7 +839,14 @@ index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c0
  			clineSettings={editTaskClineSettings}
  			onClineSettingsChange={setEditTaskClineSettings}
  			defaultAgentId={runtimeProjectConfig?.selectedAgentId ?? null}
-@@ -944,6 +951,7 @@ export default function App(): ReactElement {
+ 			defaultProviderId={defaultTaskClineProviderId}
+ 			defaultModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
+ 			defaultReasoningEffort={runtimeProjectConfig?.clineProviderSettings?.reasoningEffort ?? null}
++			launchProfiles={runtimeProjectConfig?.launchProfiles ?? []}
+ 			mode="edit"
+ 			idPrefix={`inline-edit-task-${editingTaskId}`}
+ 		/>
+@@ -944,6 +971,7 @@ export default function App(): ReactElement {
  												inlineTaskEditor={inlineTaskEditor}
  												onEditTask={handleOpenEditTask}
  												onSaveTaskTitle={handleSaveTaskTitle}
@@ -511,7 +854,7 @@ index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c0
  												onCommitTask={handleCommitTask}
  												onOpenPrTask={handleOpenPrTask}
  												onCancelAutomaticTaskAction={handleCancelAutomaticTaskAction}
-@@ -959,6 +967,7 @@ export default function App(): ReactElement {
+@@ -959,6 +987,7 @@ export default function App(): ReactElement {
  													selectedCard ? undefined : handleProgrammaticCardMoveReady
  												}
  												onDragEnd={handleDragEnd}
@@ -519,7 +862,7 @@ index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c0
  												defaultClineModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
  											/>
  										)}
-@@ -1029,6 +1038,7 @@ export default function App(): ReactElement {
+@@ -1029,6 +1058,7 @@ export default function App(): ReactElement {
  										handleOpenEditTask(task, { preserveDetailSelection: true });
  									}}
  									onSaveTaskTitle={handleSaveTaskTitle}
@@ -527,7 +870,15 @@ index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c0
  									onCommitTask={handleCommitTask}
  									onOpenPrTask={handleOpenPrTask}
  									onAgentCommitTask={handleAgentCommitTask}
-@@ -1131,6 +1141,8 @@ export default function App(): ReactElement {
+@@ -1115,6 +1145,7 @@ export default function App(): ReactElement {
+ 					onImagesChange={setNewTaskImages}
+ 					onCreate={handleCreateTask}
+ 					onCreateAndStart={handleCreateAndStartTask}
++					onStartInteractive={handleStartInteractiveAgent}
+ 					onCreateStartAndOpen={handleCreateStartAndOpenTask}
+ 					onCreateMultiple={handleCreateTasks}
+ 					onCreateAndStartMultiple={handleCreateAndStartTasks}
+@@ -1131,12 +1162,15 @@ export default function App(): ReactElement {
  					onBranchRefChange={setNewTaskBranchRef}
  					agentId={newTaskAgentId}
  					onAgentIdChange={setNewTaskAgentId}
@@ -536,6 +887,13 @@ index c9faf03975807c79e5355cd28c81e65bb5ed620b..4e563e9a30d39f09107cf6f9bc0d65c0
  					clineSettings={newTaskClineSettings}
  					onClineSettingsChange={setNewTaskClineSettings}
  					defaultAgentId={runtimeProjectConfig?.selectedAgentId ?? null}
+ 					defaultProviderId={defaultTaskClineProviderId}
+ 					defaultModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
+ 					defaultReasoningEffort={runtimeProjectConfig?.clineProviderSettings?.reasoningEffort ?? null}
++					launchProfiles={runtimeProjectConfig?.launchProfiles ?? []}
+ 				/>
+ 				<ClearTrashDialog
+ 					open={isClearTrashDialogOpen}
 diff --git a/web-ui/src/components/board-card.test.tsx b/web-ui/src/components/board-card.test.tsx
 index 364ef22dfd160b34e916fd6c123bf9a921608c20..4c50fb250f3e301e6b6fc5b900d35dbd0f73d445 100644
 --- a/web-ui/src/components/board-card.test.tsx
@@ -1000,8 +1358,363 @@ index 2aec21148d151006e817f8e0d0d41909a171400d..1da4500170f031967620bd71126568b5
  						defaultClineModelId={defaultClineModelId}
  						onCardClick={(card) => {
  							if (!dragOccurredRef.current) {
+diff --git a/web-ui/src/components/runtime-settings-dialog.tsx b/web-ui/src/components/runtime-settings-dialog.tsx
+index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f656dbbb9 100644
+--- a/web-ui/src/components/runtime-settings-dialog.tsx
++++ b/web-ui/src/components/runtime-settings-dialog.tsx
+@@ -17,6 +17,7 @@ import {
+ 	ExternalLink,
+ 	FolderOpen,
+ 	GitCommit,
++	KeyRound,
+ 	Palette,
+ 	Plus,
+ 	Settings,
+@@ -44,6 +45,7 @@ import { previewThemeId, readStoredThemeId, saveThemeId, THEME_GROUPS, THEMES, t
+ import { useLayoutCustomizations } from "@/resize/layout-customizations";
+ import { openFileOnHost } from "@/runtime/runtime-config-query";
+ import type {
++	LaunchProfileSummary,
+ 	RuntimeAgentId,
+ 	RuntimeClineMcpServerAuthStatus,
+ 	RuntimeConfigResponse,
+@@ -90,11 +92,44 @@ const GIT_PROMPT_VARIANT_OPTIONS: Array<{ value: TaskGitAction; label: string }>
+ 	{ value: "pr", label: "Make PR" },
+ ];
+ 
++function launchProfileDraftFromSummary(profile: LaunchProfileSummary): LaunchProfileDraft {
++	return {
++		id: profile.id,
++		name: profile.name,
++		agentId: profile.agentId,
++		cliArgs: [...profile.cliArgs],
++		variables: profile.variables.map((variable) => ({
++			name: variable.name,
++			value: "",
++			configured: variable.configured,
++		})),
++	};
++}
++
++function areLaunchProfileDraftsEqual(left: LaunchProfileDraft[], right: LaunchProfileDraft[]): boolean {
++	return JSON.stringify(left) === JSON.stringify(right);
++}
++
+ export type RuntimeSettingsSection = "shortcuts";
+ 
+ const SETTINGS_AGENT_ORDER: readonly RuntimeAgentId[] = ["cline", "claude", "codex", "droid", "kiro"];
+ 
+-type SettingsNavId = "general" | "cline" | "git-prompts" | "notifications" | "appearance" | "project";
++type LaunchProfileDraft = {
++	id?: string;
++	name: string;
++	agentId: RuntimeAgentId | null;
++	cliArgs: string[];
++	variables: Array<{ name: string; value: string; configured: boolean }>;
++};
++
++type SettingsNavId =
++	| "general"
++	| "launch-profiles"
++	| "cline"
++	| "git-prompts"
++	| "notifications"
++	| "appearance"
++	| "project";
+ 
+ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
+ 	id: SettingsNavId;
+@@ -103,6 +138,7 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
+ 	clineOnly?: boolean;
+ }> = [
+ 	{ id: "general", label: "General", icon: <SlidersHorizontal size={16} /> },
++	{ id: "launch-profiles", label: "Launch profiles", icon: <KeyRound size={16} /> },
+ 	{ id: "cline", label: "Cline", icon: <Bot size={16} />, clineOnly: true },
+ 	{ id: "git-prompts", label: "Git Prompts", icon: <GitCommit size={16} /> },
+ 	{ id: "notifications", label: "Notifications", icon: <Bell size={16} /> },
+@@ -373,6 +409,7 @@ export function RuntimeSettingsDialog({
+ 	const [draftThemeId, setDraftThemeId] = useState<ThemeId>(readStoredThemeId);
+ 	const [notificationPermission, setNotificationPermission] = useState<BrowserNotificationPermission>("unsupported");
+ 	const [shortcuts, setShortcuts] = useState<RuntimeProjectShortcut[]>([]);
++	const [launchProfiles, setLaunchProfiles] = useState<LaunchProfileDraft[]>([]);
+ 	const [commitPromptTemplate, setCommitPromptTemplate] = useState("");
+ 	const [openPrPromptTemplate, setOpenPrPromptTemplate] = useState("");
+ 	const [selectedPromptVariant, setSelectedPromptVariant] = useState<TaskGitAction>("commit");
+@@ -443,6 +480,10 @@ export function RuntimeSettingsDialog({
+ 	const initialAgentAutonomousModeEnabled = config?.agentAutonomousModeEnabled ?? true;
+ 	const initialReadyForReviewNotificationsEnabled = config?.readyForReviewNotificationsEnabled ?? true;
+ 	const initialShortcuts = config?.shortcuts ?? [];
++	const initialLaunchProfiles = useMemo(
++		() => (config?.launchProfiles ?? []).map(launchProfileDraftFromSummary),
++		[config?.launchProfiles],
++	);
+ 	const initialCommitPromptTemplate = config?.commitPromptTemplate ?? "";
+ 	const initialOpenPrPromptTemplate = config?.openPrPromptTemplate ?? "";
+ 	const clineSettings = useRuntimeSettingsClineController({
+@@ -482,6 +523,9 @@ export function RuntimeSettingsDialog({
+ 		if (!areRuntimeProjectShortcutsEqual(shortcuts, initialShortcuts)) {
+ 			return true;
+ 		}
++		if (!areLaunchProfileDraftsEqual(launchProfiles, initialLaunchProfiles)) {
++			return true;
++		}
+ 		if (
+ 			normalizeTemplateForComparison(commitPromptTemplate) !==
+ 			normalizeTemplateForComparison(initialCommitPromptTemplate)
+@@ -505,11 +549,13 @@ export function RuntimeSettingsDialog({
+ 		initialReadyForReviewNotificationsEnabled,
+ 		initialSelectedAgentId,
+ 		initialShortcuts,
++		initialLaunchProfiles,
+ 		initialThemeId,
+ 		openPrPromptTemplate,
+ 		readyForReviewNotificationsEnabled,
+ 		selectedAgentId,
+ 		shortcuts,
++		launchProfiles,
+ 	]);
+ 
+ 	useEffect(() => {
+@@ -520,6 +566,7 @@ export function RuntimeSettingsDialog({
+ 		setAgentAutonomousModeEnabled(config?.agentAutonomousModeEnabled ?? true);
+ 		setReadyForReviewNotificationsEnabled(config?.readyForReviewNotificationsEnabled ?? true);
+ 		setShortcuts(config?.shortcuts ?? []);
++		setLaunchProfiles((config?.launchProfiles ?? []).map(launchProfileDraftFromSummary));
+ 		setCommitPromptTemplate(config?.commitPromptTemplate ?? "");
+ 		setOpenPrPromptTemplate(config?.openPrPromptTemplate ?? "");
+ 		setSaveError(null);
+@@ -530,6 +577,7 @@ export function RuntimeSettingsDialog({
+ 		config?.readyForReviewNotificationsEnabled,
+ 		config?.selectedAgentId,
+ 		config?.shortcuts,
++		config?.launchProfiles,
+ 		fallbackAgentId,
+ 		open,
+ 	]);
+@@ -697,6 +745,22 @@ export function RuntimeSettingsDialog({
+ 				return;
+ 			}
+ 		}
++		if (launchProfiles.some((profile) => profile.name.trim().length === 0)) {
++			setSaveError("Every launch profile needs a name.");
++			return;
++		}
++		const launchProfilePayload = launchProfiles.map((profile) => ({
++			...(profile.id ? { id: profile.id } : {}),
++			name: profile.name.trim(),
++			agentId: profile.agentId,
++			cliArgs: profile.cliArgs,
++			variables: profile.variables
++				.filter((variable) => variable.name.trim().length > 0)
++				.map((variable) => ({
++					name: variable.name.trim(),
++					value: variable.configured && variable.value.length === 0 ? undefined : variable.value,
++				})),
++		}));
+ 		const saved = await save({
+ 			selectedAgentId,
+ 			agentAutonomousModeEnabled,
+@@ -704,6 +768,7 @@ export function RuntimeSettingsDialog({
+ 			shortcuts,
+ 			commitPromptTemplate,
+ 			openPrPromptTemplate,
++			launchProfiles: launchProfilePayload,
+ 		});
+ 		if (!saved) {
+ 			setSaveError("Could not save runtime settings. Check runtime logs and try again.");
+@@ -756,6 +821,29 @@ export function RuntimeSettingsDialog({
+ 	);
+ 
+ 	const currentThemeDef = THEMES.find((t) => t.id === draftThemeId);
++	const updateLaunchProfile = (profileIndex: number, patch: Partial<LaunchProfileDraft>) => {
++		setLaunchProfiles((current) =>
++			current.map((profile, index) => (index === profileIndex ? { ...profile, ...patch } : profile)),
++		);
++	};
++	const updateLaunchProfileVariable = (
++		profileIndex: number,
++		variableIndex: number,
++		patch: Partial<LaunchProfileDraft["variables"][number]>,
++	) => {
++		setLaunchProfiles((current) =>
++			current.map((profile, index) =>
++				index === profileIndex
++					? {
++							...profile,
++							variables: profile.variables.map((variable, itemIndex) =>
++								itemIndex === variableIndex ? { ...variable, ...patch } : variable,
++							),
++						}
++					: profile,
++			),
++		);
++	};
+ 
+ 	return (
+ 		<Dialog open={open} onOpenChange={handleDialogOpenChange} contentClassName="!max-w-[780px]">
+@@ -814,6 +902,160 @@ export function RuntimeSettingsDialog({
+ 						</p>
+ 					</div>
+ 
++					{/* ---- Launch profiles ---- */}
++					<div data-settings-section="launch-profiles" />
++					<div className="sticky top-0 -mx-5 px-5 pt-4 pb-2 bg-surface-1 z-10">
++						<h2 className="flex items-center gap-2 text-base font-semibold text-text-primary m-0">
++							<KeyRound size={16} className="text-text-secondary" />
++							Launch profiles
++						</h2>
++					</div>
++					<div className="rounded-lg border border-border bg-surface-0 px-4 py-3 mb-4">
++						<p className="text-text-secondary text-[13px] mt-0 mb-3">
++							Save encrypted environment variables and CLI arguments, then select a profile when starting a task.
++							Values are never returned to the browser after they are saved.
++						</p>
++						<div className="flex justify-end mb-2">
++							<Button
++								size="sm"
++								icon={<Plus size={14} />}
++								onClick={() =>
++									setLaunchProfiles((current) => [
++										...current,
++										{ name: "", agentId: null, cliArgs: [], variables: [] },
++									])
++								}
++								disabled={controlsDisabled || launchProfiles.length >= 50}
++							>
++								Add profile
++							</Button>
++						</div>
++						<div className="space-y-3">
++							{launchProfiles.map((profile, profileIndex) => (
++								<div
++									key={profile.id ?? profileIndex}
++									className="rounded-md border border-border-bright bg-surface-1 p-3 space-y-2"
++								>
++									<div className="flex items-center gap-2">
++										<input
++											value={profile.name}
++											onChange={(event) => updateLaunchProfile(profileIndex, { name: event.target.value })}
++											placeholder="Profile name"
++											className="h-8 min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
++										/>
++										<NativeSelect
++											value={profile.agentId ?? "all"}
++											onChange={(event) =>
++												updateLaunchProfile(profileIndex, {
++													agentId:
++														event.target.value === "all" ? null : (event.target.value as RuntimeAgentId),
++												})
++											}
++										>
++											<option value="all">All agents</option>
++											{getRuntimeLaunchSupportedAgentCatalog()
++												.filter((agent) => agent.id !== "cline")
++												.map((agent) => (
++													<option key={agent.id} value={agent.id}>
++														{agent.label}
++													</option>
++												))}
++										</NativeSelect>
++										<Button
++											variant="ghost"
++											size="sm"
++											icon={<X size={14} />}
++											aria-label={`Remove launch profile ${profile.name}`}
++											onClick={() =>
++												setLaunchProfiles((current) => current.filter((_, index) => index !== profileIndex))
++											}
++										/>
++									</div>
++									<textarea
++										value={profile.cliArgs.join("\n")}
++										rows={2}
++										placeholder={"CLI arguments, one per line, e.g.\n-c\nmodel_context_window=100000"}
++										onChange={(event) =>
++											updateLaunchProfile(profileIndex, {
++												cliArgs: event.target.value.split("\n").filter((arg) => arg.length > 0),
++											})
++										}
++										className="w-full resize-y rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
++									/>
++									<div className="space-y-1">
++										{profile.variables.map((variable, variableIndex) => (
++											<div key={variableIndex} className="flex gap-1">
++												<input
++													value={variable.name}
++													onChange={(event) =>
++														updateLaunchProfileVariable(profileIndex, variableIndex, {
++															name: event.target.value,
++														})
++													}
++													placeholder="NAME"
++													className="w-2/5 min-w-0 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
++												/>
++												<input
++													value={variable.value}
++													type="password"
++													autoComplete="off"
++													placeholder={variable.configured ? "Saved value (blank keeps it)" : "Value"}
++													onChange={(event) =>
++														updateLaunchProfileVariable(profileIndex, variableIndex, {
++															value: event.target.value,
++															configured: true,
++														})
++													}
++													className="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
++												/>
++												<Button
++													variant="ghost"
++													size="sm"
++													icon={<X size={14} />}
++													aria-label={`Remove variable ${variable.name}`}
++													onClick={() =>
++														setLaunchProfiles((current) =>
++															current.map((item, index) =>
++																index === profileIndex
++																	? {
++																			...item,
++																			variables: item.variables.filter(
++																				(_, entryIndex) => entryIndex !== variableIndex,
++																			),
++																		}
++																	: item,
++															),
++														)
++													}
++												/>
++											</div>
++										))}
++										<div className="flex gap-2">
++											<Button
++												size="sm"
++												icon={<Plus size={14} />}
++												onClick={() =>
++													updateLaunchProfile(profileIndex, {
++														variables: [...profile.variables, { name: "", value: "", configured: false }],
++													})
++												}
++												disabled={profile.variables.length >= 100}
++											>
++												Add variable
++											</Button>
++											<span className="self-center text-[11px] text-text-tertiary">
++												Blank saved values keep the encrypted secret.
++											</span>
++										</div>
++									</div>
++								</div>
++							))}
++							{launchProfiles.length === 0 ? (
++								<p className="text-text-secondary text-[13px]">No launch profiles configured.</p>
++							) : null}
++						</div>
++					</div>
++
+ 					{/* ---- Cline ---- */}
+ 					{selectedAgentId === "cline" ? (
+ 						<>
 diff --git a/web-ui/src/components/task-create-dialog.tsx b/web-ui/src/components/task-create-dialog.tsx
-index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37174c6542 100644
+index 6020693b52076cebf21e9e8bab16b9a2e450496d..582bd600a4ce79bd840e2bc61038f8ddc59a7b64 100644
 --- a/web-ui/src/components/task-create-dialog.tsx
 +++ b/web-ui/src/components/task-create-dialog.tsx
 @@ -1,7 +1,6 @@
@@ -1012,7 +1725,7 @@ index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37
  import {
  	ArrowBigUp,
  	ArrowLeft,
-@@ -18,15 +17,20 @@ import {
+@@ -18,15 +17,21 @@ import {
  import type { Dispatch, ReactElement, SetStateAction } from "react";
  import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
  import { useHotkeys } from "react-hotkeys-hook";
@@ -1027,6 +1740,7 @@ index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37
  import { NativeSelect } from "@/components/ui/native-select";
 -import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
 +import type {
++	LaunchProfileSummary,
 +	RuntimeAgentId,
 +	RuntimeClineReasoningEffort,
 +	RuntimeTaskClineSettings,
@@ -1035,7 +1749,15 @@ index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37
  import { LocalStorageKey } from "@/storage/local-storage-store";
  import type { TaskAutoReviewMode, TaskImage } from "@/types";
  import { isMacPlatform, pasteShortcutLabel } from "@/utils/platform";
-@@ -120,6 +124,8 @@ export function TaskCreateDialog({
+@@ -104,6 +109,7 @@ export function TaskCreateDialog({
+ 	onImagesChange,
+ 	onCreate,
+ 	onCreateAndStart,
++	onStartInteractive,
+ 	onCreateMultiple,
+ 	onCreateAndStartMultiple,
+ 	onCreateStartAndOpen,
+@@ -120,12 +126,15 @@ export function TaskCreateDialog({
  	onBranchRefChange,
  	agentId,
  	onAgentIdChange,
@@ -1044,7 +1766,22 @@ index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37
  	clineSettings,
  	onClineSettingsChange,
  	defaultAgentId,
-@@ -151,6 +157,8 @@ export function TaskCreateDialog({
+ 	defaultProviderId,
+ 	defaultModelId,
+ 	defaultReasoningEffort,
++	launchProfiles = [],
+ }: {
+ 	open: boolean;
+ 	onOpenChange: (open: boolean) => void;
+@@ -135,6 +144,7 @@ export function TaskCreateDialog({
+ 	onImagesChange: Dispatch<SetStateAction<TaskImage[]>>;
+ 	onCreate: (options?: { keepDialogOpen?: boolean }) => string | null;
+ 	onCreateAndStart?: (options?: { keepDialogOpen?: boolean }) => string | null;
++	onStartInteractive?: () => void;
+ 	onCreateMultiple: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
+ 	onCreateAndStartMultiple?: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
+ 	onCreateStartAndOpen?: (options?: { keepDialogOpen?: boolean }) => string | null;
+@@ -151,6 +161,8 @@ export function TaskCreateDialog({
  	onBranchRefChange: (value: string) => void;
  	agentId?: RuntimeAgentId | undefined;
  	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
@@ -1053,7 +1790,44 @@ index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37
  	clineSettings?: RuntimeTaskClineSettings | undefined;
  	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
  	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
-@@ -596,6 +604,13 @@ export function TaskCreateDialog({
+@@ -161,6 +173,7 @@ export function TaskCreateDialog({
+ 	defaultModelId?: string | null;
+ 	/** Default Cline reasoning effort from runtimeConfig.clineProviderSettings.reasoningEffort */
+ 	defaultReasoningEffort?: RuntimeClineReasoningEffort | null;
++	launchProfiles?: LaunchProfileSummary[];
+ }): ReactElement {
+ 	const [mode, setMode] = useState<"single" | "multi">("single");
+ 	const [createMore, setCreateMore] = useState(false);
+@@ -291,18 +304,26 @@ export function TaskCreateDialog({
+ 	}, [createMore, onCreate, resetForCreateMore]);
+ 
+ 	const handleCreateAndStartSingle = useCallback(() => {
++		if (!prompt.trim()) {
++			onStartInteractive?.();
++			return;
++		}
+ 		const createdTaskId = onCreateAndStart?.({ keepDialogOpen: createMore });
+ 		if (createMore && createdTaskId) {
+ 			resetForCreateMore();
+ 		}
+-	}, [createMore, onCreateAndStart, resetForCreateMore]);
++	}, [createMore, onCreateAndStart, onStartInteractive, prompt, resetForCreateMore]);
+ 
+ 	const handleCreateStartAndOpenSingle = useCallback(() => {
++		if (!prompt.trim()) {
++			onStartInteractive?.();
++			return;
++		}
+ 		const createdTaskId = onCreateStartAndOpen?.({ keepDialogOpen: createMore });
+ 		if (createMore && createdTaskId) {
+ 			resetForCreateMore();
+ 		}
+-	}, [createMore, onCreateStartAndOpen, resetForCreateMore]);
++	}, [createMore, onCreateStartAndOpen, onStartInteractive, prompt, resetForCreateMore]);
+ 
+ 	const handleRunSingleStartAction = useCallback(
+ 		(action: TaskCreateStartAction) => {
+@@ -596,6 +617,14 @@ export function TaskCreateDialog({
  						/>
  					) : null}
  				</div>
@@ -1062,16 +1836,35 @@ index 6020693b52076cebf21e9e8bab16b9a2e450496d..ad86ae11ee2d7a2019ae98d4664fcc37
 +						value={taskOverrides}
 +						onChange={onTaskOverridesChange}
 +						agentId={agentId ?? defaultAgentId}
++						launchProfiles={launchProfiles}
 +					/>
 +				) : null}
  			</DialogBody>
  			<DialogFooter>
  				<label
+@@ -627,7 +656,7 @@ export function TaskCreateDialog({
+ 										variant="primary"
+ 										size="sm"
+ 										onClick={() => handleRunSingleStartAction(primaryStartAction)}
+-										disabled={!prompt.trim() || !branchRef}
++										disabled={prompt.trim() ? !branchRef : !onStartInteractive}
+ 										className={onCreateStartAndOpen ? "rounded-r-none" : undefined}
+ 									>
+ 										<span className="inline-flex items-center">
+@@ -640,7 +669,7 @@ export function TaskCreateDialog({
+ 											<Button
+ 												variant="primary"
+ 												size="sm"
+-												disabled={!prompt.trim() || !branchRef}
++												disabled={prompt.trim() ? !branchRef : !onStartInteractive}
+ 												className="rounded-l-none border-l border-white/20 px-1"
+ 												aria-label="More start options"
+ 											>
 diff --git a/web-ui/src/components/task-inline-create-card.tsx b/web-ui/src/components/task-inline-create-card.tsx
-index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa2b30e12d 100644
+index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..87fb89a5c9fc4c9cdc25c04352ea4eefaa8e14ae 100644
 --- a/web-ui/src/components/task-inline-create-card.tsx
 +++ b/web-ui/src/components/task-inline-create-card.tsx
-@@ -3,13 +3,18 @@ import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
+@@ -3,13 +3,19 @@ import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
  import { ArrowBigUp, Check, Command, CornerDownLeft } from "lucide-react";
  import { type Dispatch, type ReactElement, type SetStateAction, useCallback, useRef, useState } from "react";
  import { useHotkeys } from "react-hotkeys-hook";
@@ -1084,6 +1877,7 @@ index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa
  import { NativeSelect } from "@/components/ui/native-select";
 -import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
 +import type {
++	LaunchProfileSummary,
 +	RuntimeAgentId,
 +	RuntimeClineReasoningEffort,
 +	RuntimeTaskClineSettings,
@@ -1092,7 +1886,15 @@ index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa
  import type { TaskAutoReviewMode, TaskImage } from "@/types";
  import { pasteShortcutLabel } from "@/utils/platform";
  import { useDocumentEvent, useMeasure } from "@/utils/react-use";
-@@ -69,6 +74,8 @@ export function TaskInlineCreateCard({
+@@ -52,6 +58,7 @@ export function TaskInlineCreateCard({
+ 	onImagesChange,
+ 	onCreate,
+ 	onCreateAndStart,
++	onStartInteractive,
+ 	onCancel,
+ 	startInPlanMode,
+ 	onStartInPlanModeChange,
+@@ -69,12 +76,15 @@ export function TaskInlineCreateCard({
  	idPrefix = "inline-task",
  	agentId,
  	onAgentIdChange,
@@ -1101,7 +1903,22 @@ index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa
  	clineSettings,
  	onClineSettingsChange,
  	defaultAgentId,
-@@ -101,6 +108,8 @@ export function TaskInlineCreateCard({
+ 	defaultProviderId,
+ 	defaultModelId,
+ 	defaultReasoningEffort,
++	launchProfiles = [],
+ }: {
+ 	title?: string;
+ 	onTitleChange?: (value: string) => void;
+@@ -84,6 +94,7 @@ export function TaskInlineCreateCard({
+ 	onImagesChange?: Dispatch<SetStateAction<TaskImage[]>>;
+ 	onCreate: () => void;
+ 	onCreateAndStart?: () => void;
++	onStartInteractive?: () => void;
+ 	onCancel?: () => void;
+ 	startInPlanMode: boolean;
+ 	onStartInPlanModeChange: (value: boolean) => void;
+@@ -101,6 +112,8 @@ export function TaskInlineCreateCard({
  	idPrefix?: string;
  	agentId?: RuntimeAgentId | undefined;
  	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
@@ -1110,7 +1927,24 @@ index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa
  	clineSettings?: RuntimeTaskClineSettings | undefined;
  	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
  	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
-@@ -330,6 +339,13 @@ export function TaskInlineCreateCard({
+@@ -111,6 +124,7 @@ export function TaskInlineCreateCard({
+ 	defaultModelId?: string | null;
+ 	/** Default Cline reasoning effort from runtimeConfig.clineProviderSettings.reasoningEffort */
+ 	defaultReasoningEffort?: RuntimeClineReasoningEffort | null;
++	launchProfiles?: LaunchProfileSummary[];
+ }): ReactElement {
+ 	const promptId = `${idPrefix}-prompt-input`;
+ 	const planModeId = `${idPrefix}-plan-mode-toggle`;
+@@ -223,7 +237,7 @@ export function TaskInlineCreateCard({
+ 					images={images}
+ 					onImagesChange={onImagesChange}
+ 					onSubmit={onCreate}
+-					onSubmitAndStart={onCreateAndStart}
++					onSubmitAndStart={prompt.trim() ? onCreateAndStart : onStartInteractive}
+ 					onEscape={onCancel}
+ 					placeholder="Describe the task..."
+ 					enabled={enabled}
+@@ -330,6 +344,14 @@ export function TaskInlineCreateCard({
  				) : null}
  			</div>
  
@@ -1119,11 +1953,23 @@ index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..98f9dc3f67473ac7f920c16091fa85fa
 +					value={taskOverrides}
 +					onChange={onTaskOverridesChange}
 +					agentId={agentId ?? defaultAgentId}
++					launchProfiles={launchProfiles}
 +				/>
 +			) : null}
  			<div className={`flex gap-2 mt-3 ${mode === "edit" ? "justify-end" : "justify-between"}`}>
  				{mode === "create" && onCancel ? (
  					<Button variant="default" size="sm" className="whitespace-nowrap" onClick={onCancel}>
+@@ -353,8 +375,8 @@ export function TaskInlineCreateCard({
+ 							variant="primary"
+ 							size="sm"
+ 							className="whitespace-nowrap"
+-							onClick={onCreateAndStart}
+-							disabled={!prompt.trim() || !branchRef}
++							onClick={() => (prompt.trim() ? onCreateAndStart() : onStartInteractive?.())}
++							disabled={prompt.trim() ? !branchRef : !onStartInteractive}
+ 						>
+ 							<span className="inline-flex items-center">
+ 								<span>Start</span>
 diff --git a/web-ui/src/hooks/use-task-editor.test.tsx b/web-ui/src/hooks/use-task-editor.test.tsx
 index 20e7f4a1b1b50f7d402e41cd337b52fe0d466842..5f5b90a95ac7bd718e3277d7e0f90fd24534af54 100644
 --- a/web-ui/src/hooks/use-task-editor.test.tsx
@@ -1496,6 +2342,175 @@ index d3752286dab32ad97b627ebcd1487106800dc5a8..43b1628831c227e3f40819a3096455b9
  				});
  				if (!payload.ok || !payload.summary) {
  					return {
+diff --git a/web-ui/src/hooks/use-terminal-panels.ts b/web-ui/src/hooks/use-terminal-panels.ts
+index b68010e5380f8c6fbee5459bb4242d06a283560c..76627d6738715f252276b25a724da0732b299928 100644
+--- a/web-ui/src/hooks/use-terminal-panels.ts
++++ b/web-ui/src/hooks/use-terminal-panels.ts
+@@ -7,7 +7,12 @@ import {
+ 	writePersistedResizeNumber,
+ } from "@/resize/resize-persistence";
+ import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
+-import type { RuntimeGitRepositoryInfo, RuntimeTaskSessionSummary } from "@/runtime/types";
++import type {
++	RuntimeAgentId,
++	RuntimeGitRepositoryInfo,
++	RuntimeTaskSessionSummary,
++	TaskOverrides,
++} from "@/runtime/types";
+ import { LocalStorageKey, removeLocalStorageItem } from "@/storage/local-storage-store";
+ import { getTerminalGeometry, prepareWaitForTerminalGeometry } from "@/terminal/terminal-geometry-registry";
+ import type { SendTerminalInputOptions } from "@/terminal/terminal-input";
+@@ -108,6 +113,7 @@ export interface UseTerminalPanelsResult {
+ 	handleToggleExpandHomeTerminal: () => void;
+ 	handleToggleExpandDetailTerminal: () => void;
+ 	handleToggleHomeTerminal: () => void;
++	startInteractiveAgentSession: (agentId: RuntimeAgentId, taskOverrides?: TaskOverrides) => Promise<boolean>;
+ 	handleToggleDetailTerminal: () => void;
+ 	handleSendAgentCommandToHomeTerminal: () => void;
+ 	handleSendAgentCommandToDetailTerminal: () => void;
+@@ -252,36 +258,56 @@ export function useTerminalPanels({
+ 		}));
+ 	}, [detailTerminalTaskId, updateDetailTerminalPanelState]);
+ 
+-	const startHomeTerminalSession = useCallback(async (): Promise<boolean> => {
+-		if (!currentProjectId) {
+-			return false;
+-		}
+-		setIsHomeTerminalStarting(true);
+-		try {
+-			const geometry = await resolveShellTerminalGeometry(HOME_TERMINAL_TASK_ID);
+-			const trpcClient = getRuntimeTrpcClient(currentProjectId);
+-			const payload = await trpcClient.runtime.startShellSession.mutate({
+-				taskId: HOME_TERMINAL_TASK_ID,
+-				cols: geometry.cols,
+-				rows: geometry.rows,
+-				baseRef: workspaceGit?.currentBranch ?? workspaceGit?.defaultBranch ?? "HEAD",
+-			});
+-			if (!payload.ok || !payload.summary) {
+-				throw new Error(payload.error ?? "Could not start terminal session.");
++	const startHomeTerminalSession = useCallback(
++		async (launch?: { agentId?: RuntimeAgentId; taskOverrides?: TaskOverrides }): Promise<boolean> => {
++			if (!currentProjectId) {
++				return false;
+ 			}
+-			upsertSession(payload.summary);
+-			setHomeTerminalShellBinary(
+-				typeof payload.shellBinary === "string" && payload.shellBinary.trim() ? payload.shellBinary : null,
+-			);
+-			return true;
+-		} catch (error) {
+-			const message = error instanceof Error ? error.message : String(error);
+-			notifyError(message);
+-			return false;
+-		} finally {
+-			setIsHomeTerminalStarting(false);
+-		}
+-	}, [currentProjectId, upsertSession, workspaceGit?.currentBranch, workspaceGit?.defaultBranch]);
++			setIsHomeTerminalStarting(true);
++			try {
++				const geometry = await resolveShellTerminalGeometry(HOME_TERMINAL_TASK_ID);
++				const trpcClient = getRuntimeTrpcClient(currentProjectId);
++				const payload = await trpcClient.runtime.startShellSession.mutate({
++					taskId: HOME_TERMINAL_TASK_ID,
++					cols: geometry.cols,
++					rows: geometry.rows,
++					baseRef: workspaceGit?.currentBranch ?? workspaceGit?.defaultBranch ?? "HEAD",
++					...(launch?.agentId ? { agentId: launch.agentId, taskOverrides: launch.taskOverrides } : {}),
++				});
++				if (!payload.ok || !payload.summary) {
++					throw new Error(payload.error ?? "Could not start terminal session.");
++				}
++				upsertSession(payload.summary);
++				setHomeTerminalShellBinary(
++					typeof payload.shellBinary === "string" && payload.shellBinary.trim() ? payload.shellBinary : null,
++				);
++				return true;
++			} catch (error) {
++				const message = error instanceof Error ? error.message : String(error);
++				notifyError(message);
++				return false;
++			} finally {
++				setIsHomeTerminalStarting(false);
++			}
++		},
++		[currentProjectId, upsertSession, workspaceGit?.currentBranch, workspaceGit?.defaultBranch],
++	);
++
++	const startInteractiveAgentSession = useCallback(
++		async (agentId: RuntimeAgentId, taskOverrides?: TaskOverrides): Promise<boolean> => {
++			if (!currentProjectId) {
++				return false;
++			}
++			homeTerminalProjectIdRef.current = currentProjectId;
++			setIsHomeTerminalOpen(true);
++			const started = await startHomeTerminalSession({ agentId, taskOverrides });
++			if (!started) {
++				closeHomeTerminal();
++			}
++			return started;
++		},
++		[closeHomeTerminal, currentProjectId, startHomeTerminalSession],
++	);
+ 
+ 	const handleToggleHomeTerminal = useCallback(() => {
+ 		if (isHomeTerminalOpen) {
+@@ -508,6 +534,7 @@ export function useTerminalPanels({
+ 		handleToggleExpandHomeTerminal,
+ 		handleToggleExpandDetailTerminal,
+ 		handleToggleHomeTerminal,
++		startInteractiveAgentSession,
+ 		handleToggleDetailTerminal,
+ 		handleSendAgentCommandToHomeTerminal,
+ 		handleSendAgentCommandToDetailTerminal,
+diff --git a/web-ui/src/runtime/runtime-config-query.ts b/web-ui/src/runtime/runtime-config-query.ts
+index 35db4f9f6fc7a1ba3851130bcb6ecca9d7182f71..a547c9746de5f116d4561049dfb2d24d119f9bb9 100644
+--- a/web-ui/src/runtime/runtime-config-query.ts
++++ b/web-ui/src/runtime/runtime-config-query.ts
+@@ -3,6 +3,7 @@
+ // on state orchestration instead of transport plumbing.
+ import { getRuntimeTrpcClient } from "@/runtime/trpc-client";
+ import type {
++	LaunchProfileSave,
+ 	RuntimeAgentId,
+ 	RuntimeClineAccountBalanceResponse,
+ 	RuntimeClineAccountOrganizationsResponse,
+@@ -48,6 +49,7 @@ export async function saveRuntimeConfig(
+ 		readyForReviewNotificationsEnabled?: boolean;
+ 		commitPromptTemplate?: string;
+ 		openPrPromptTemplate?: string;
++		launchProfiles?: LaunchProfileSave[];
+ 	},
+ ): Promise<RuntimeConfigResponse> {
+ 	const trpcClient = getRuntimeTrpcClient(workspaceId);
+diff --git a/web-ui/src/runtime/use-runtime-config.ts b/web-ui/src/runtime/use-runtime-config.ts
+index 0f8d222004f7af4b25c937d8b97655aa47d64bcd..6a3ff1b6ab01bfe6615d526375e2b480aff299ba 100644
+--- a/web-ui/src/runtime/use-runtime-config.ts
++++ b/web-ui/src/runtime/use-runtime-config.ts
+@@ -1,7 +1,7 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ 
+ import { fetchRuntimeConfig, saveRuntimeConfig } from "@/runtime/runtime-config-query";
+-import type { RuntimeAgentId, RuntimeConfigResponse, RuntimeProjectShortcut } from "@/runtime/types";
++import type { LaunchProfileSave, RuntimeAgentId, RuntimeConfigResponse, RuntimeProjectShortcut } from "@/runtime/types";
+ import { useTrpcQuery } from "@/runtime/use-trpc-query";
+ 
+ export interface UseRuntimeConfigResult {
+@@ -17,6 +17,7 @@ export interface UseRuntimeConfigResult {
+ 		readyForReviewNotificationsEnabled?: boolean;
+ 		commitPromptTemplate?: string;
+ 		openPrPromptTemplate?: string;
++		launchProfiles?: LaunchProfileSave[];
+ 	}) => Promise<RuntimeConfigResponse | null>;
+ }
+ 
+@@ -84,6 +85,7 @@ export function useRuntimeConfig(
+ 			readyForReviewNotificationsEnabled?: boolean;
+ 			commitPromptTemplate?: string;
+ 			openPrPromptTemplate?: string;
++			launchProfiles?: LaunchProfileSave[];
+ 		}): Promise<RuntimeConfigResponse | null> => {
+ 			setIsSaving(true);
+ 			try {
 diff --git a/web-ui/src/state/board-state.ts b/web-ui/src/state/board-state.ts
 index fa44cbb3d87ca0aebf214c1b9618c0075b39e62c..98923ed02c4444b034486d2b2d7b8ad0b5ab4883 100644
 --- a/web-ui/src/state/board-state.ts
@@ -1629,10 +2644,10 @@ index 0000000000000000000000000000000000000000..b7861c7c9b8b259b1716598d126857fe
 +}
 diff --git a/src/core/task-overrides.ts b/src/core/task-overrides.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7ab032b79570fa8f4efe08af9b748fda464ce839
+index 0000000000000000000000000000000000000000..ddf1db9c60239f614ea4013dc898f0b8411f0348
 --- /dev/null
 +++ b/src/core/task-overrides.ts
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,58 @@
 +import { z } from "zod";
 +
 +export const taskOverridesSchema = z.object({
@@ -1642,6 +2657,21 @@ index 0000000000000000000000000000000000000000..7ab032b79570fa8f4efe08af9b748fda
 +		.trim()
 +		.max(200)
 +		.refine((value) => !/[\r\n\0]/.test(value), "Invalid model ID")
++		.optional(),
++	launchProfileId: z
++		.string()
++		.trim()
++		.max(80)
++		.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid launch profile ID")
++		.optional(),
++	cliArgs: z
++		.array(
++			z
++				.string()
++				.max(500)
++				.refine((value) => !/[\0\r\n]/.test(value), "CLI arguments cannot contain NUL or newlines"),
++		)
++		.max(100)
 +		.optional(),
 +	environment: z
 +		.object({
@@ -1678,21 +2708,31 @@ index 0000000000000000000000000000000000000000..7ab032b79570fa8f4efe08af9b748fda
 +}
 diff --git a/src/terminal/task-launch-overrides.ts b/src/terminal/task-launch-overrides.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..90797eb54027bd734c514f90306c23351db84940
+index 0000000000000000000000000000000000000000..1cd9b1ccc28205b5c1153e74b02cc6a7b1e4dd74
 --- /dev/null
 +++ b/src/terminal/task-launch-overrides.ts
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,53 @@
 +import type { RuntimeAgentId } from "../core/api-contract";
++import type { StoredLaunchProfile } from "../core/launch-profiles";
 +import { type TaskOverrides, taskOverridesSchema } from "../core/task-overrides";
 +
 +/** Keep launch overrides in argv/env; never interpolate them into shell commands. */
-+export function resolveTaskLaunchOverrides(agentId: RuntimeAgentId, args: string[], overrides?: TaskOverrides) {
++export function resolveTaskLaunchOverrides(
++	agentId: RuntimeAgentId,
++	args: string[],
++	overrides?: TaskOverrides,
++	profile?: StoredLaunchProfile | null,
++) {
 +	const settings = overrides === undefined ? undefined : taskOverridesSchema.parse(overrides);
++	if (agentId === "cline") {
++		return { args: [...args], env: undefined, modelId: null };
++	}
 +	const cliModel = settings?.cliModel?.trim();
 +	const supportsModel = agentId === "codex" || agentId === "claude";
 +	const nextArgs: string[] = [];
-+	for (let index = 0; index < args.length; index++) {
-+		const arg = args[index];
++	const configuredArgs = [...(profile?.cliArgs ?? []), ...(settings?.cliArgs ?? []), ...args];
++	for (let index = 0; index < configuredArgs.length; index++) {
++		const arg = configuredArgs[index];
 +		if (supportsModel && cliModel) {
 +			if (arg === "--model" || arg === "-m") {
 +				index++;
@@ -1703,9 +2743,15 @@ index 0000000000000000000000000000000000000000..90797eb54027bd734c514f90306c2335
 +		nextArgs.push(arg);
 +	}
 +	if (supportsModel && cliModel) nextArgs.unshift("--model", cliModel);
++	const profileEnvironment = profile
++		? Object.fromEntries(profile.variables.map(({ name, value }) => [name, value]))
++		: {};
++	const taskEnvironment = settings?.environment?.enabled
++		? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
++		: {};
 +	const environment =
-+		agentId !== "cline" && settings?.environment?.enabled
-+			? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
++		Object.keys(profileEnvironment).length > 0 || Object.keys(taskEnvironment).length > 0
++			? { ...profileEnvironment, ...taskEnvironment }
 +			: undefined;
 +	let modelId: string | null = null;
 +	if (supportsModel) {
@@ -1762,12 +2808,13 @@ index 0000000000000000000000000000000000000000..4e4b6eda1cb3f7ffc37f165089a4c8f3
 +});
 diff --git a/test/runtime/task-overrides.test.ts b/test/runtime/task-overrides.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8e5e715a1f5d661dc204cc3b02d9720a3f892e74
+index 0000000000000000000000000000000000000000..4f00043d0ebacc57a9bb27e94259535f03015978
 --- /dev/null
 +++ b/test/runtime/task-overrides.test.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,105 @@
 +import { describe, expect, it } from "vitest";
 +import { runtimeBoardCardSchema, runtimeTaskSessionStartRequestSchema } from "../../src/core/api-contract";
++import type { StoredLaunchProfile } from "../../src/core/launch-profiles";
 +import { addTaskToColumn, updateTask } from "../../src/core/task-board-mutations";
 +import { taskOverridesSchema } from "../../src/core/task-overrides";
 +import { resolveTaskLaunchOverrides } from "../../src/terminal/task-launch-overrides";
@@ -1826,6 +2873,31 @@ index 0000000000000000000000000000000000000000..8e5e715a1f5d661dc204cc3b02d9720a
 +			expect(resolveTaskLaunchOverrides(agentId, []).env).toBeUndefined();
 +		},
 +	);
++
++	it("combines saved profile args and secrets before task-level overrides", () => {
++		const profile: StoredLaunchProfile = {
++			id: "profile-1",
++			name: "OpenAI work",
++			agentId: "codex",
++			cliArgs: ["-c", "profile_setting=true"],
++			variables: [{ name: "OPENAI_API_KEY", value: "profile-key" }],
++		};
++		expect(
++			resolveTaskLaunchOverrides(
++				"codex",
++				["--model", "default"],
++				{
++					cliArgs: ["-c", "task_setting=true"],
++					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
++				},
++				profile,
++			),
++		).toEqual({
++			args: ["-c", "profile_setting=true", "-c", "task_setting=true", "--model", "default"],
++			env: { OPENAI_API_KEY: "task-key" },
++			modelId: "default",
++		});
++	});
 +
 +	it("does not apply CLI settings to the native Cline SDK", () => {
 +		expect(resolveTaskLaunchOverrides("cline", [], settings)).toEqual({ args: [], env: undefined, modelId: null });
@@ -1921,26 +2993,28 @@ index 0000000000000000000000000000000000000000..a697f094deb92047862650df403ded3b
 +}
 diff --git a/web-ui/src/components/task-overrides-editor.tsx b/web-ui/src/components/task-overrides-editor.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..7abe331599762a8e405d4ac030903707064477a2
+index 0000000000000000000000000000000000000000..d5f403e9a3c598f61cdea8c0a2b74b900aeda41d
 --- /dev/null
 +++ b/web-ui/src/components/task-overrides-editor.tsx
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,182 @@
 +import * as Switch from "@radix-ui/react-switch";
 +import { getTaskOverridesError } from "@runtime-task-state";
 +import { Plus, X } from "lucide-react";
 +import { useId, useState } from "react";
 +import { TaskLabelsEditor } from "@/components/task-labels-editor";
 +import { Button } from "@/components/ui/button";
-+import type { RuntimeAgentId, TaskOverrides } from "@/runtime/types";
++import type { LaunchProfileSummary, RuntimeAgentId, TaskOverrides } from "@/runtime/types";
 +
 +export function TaskOverridesEditor({
 +	value = {},
 +	onChange,
 +	agentId,
++	launchProfiles = [],
 +}: {
 +	value?: TaskOverrides;
 +	onChange: (value: TaskOverrides) => void;
 +	agentId?: RuntimeAgentId | null;
++	launchProfiles?: LaunchProfileSummary[];
 +}) {
 +	const id = useId();
 +	const [showValues, setShowValues] = useState(false);
@@ -1951,6 +3025,36 @@ index 0000000000000000000000000000000000000000..7abe331599762a8e405d4ac030903707
 +	return (
 +		<div className="mt-3 space-y-3 border-t border-border pt-3">
 +			<TaskLabelsEditor labels={value.labels} onChange={(labels) => onChange({ ...value, labels })} />
++			{agentId && agentId !== "cline" && launchProfiles.length > 0 ? (
++				<div className="space-y-1">
++					<label htmlFor={`${id}-profile`} className="block text-xs text-text-secondary">
++						Saved launch profile
++					</label>
++					<select
++						id={`${id}-profile`}
++						value={value.launchProfileId ?? ""}
++						onChange={(event) =>
++							onChange({
++								...value,
++								launchProfileId: event.target.value || undefined,
++							})
++						}
++						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
++					>
++						<option value="">No saved profile</option>
++						{launchProfiles
++							.filter((profile) => profile.agentId === null || profile.agentId === agentId)
++							.map((profile) => (
++								<option key={profile.id} value={profile.id}>
++									{profile.name}
++								</option>
++							))}
++					</select>
++					<p className="text-xs text-text-tertiary">
++						Applies encrypted variables and saved CLI arguments when this task starts.
++					</p>
++				</div>
++			) : null}
 +			{agentId === "codex" || agentId === "claude" ? (
 +				<div className="space-y-1">
 +					<label htmlFor={`${id}-model`} className="block text-xs text-text-secondary">
@@ -2046,6 +3150,27 @@ index 0000000000000000000000000000000000000000..7abe331599762a8e405d4ac030903707
 +					) : null}
 +				</div>
 +			) : null}
++			{agentId && agentId !== "cline" ? (
++				<div className="space-y-1">
++					<label htmlFor={`${id}-args`} className="block text-xs text-text-secondary">
++						Additional CLI arguments
++					</label>
++					<textarea
++						id={`${id}-args`}
++						value={(value.cliArgs ?? []).join("\n")}
++						rows={2}
++						placeholder={"One argument per line, e.g.\n-c\nmodel_context_window=100000"}
++						onChange={(event) => {
++							const cliArgs = event.target.value.split("\n").filter((arg) => arg.length > 0);
++							onChange({ ...value, cliArgs: cliArgs.length > 0 ? cliArgs : undefined });
++						}}
++						className="w-full resize-y rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary focus:outline-border-focus"
++					/>
++					<p className="text-xs text-text-tertiary">
++						Each line is one argument; no shell quoting or expansion is performed.
++					</p>
++				</div>
++			) : null}
 +			{error ? (
 +				<p role="alert" className="text-xs text-status-red">
 +					{error}
@@ -2054,3 +3179,360 @@ index 0000000000000000000000000000000000000000..7abe331599762a8e405d4ac030903707
 +		</div>
 +	);
 +}
+diff --git a/src/config/launch-profiles.ts b/src/config/launch-profiles.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd896a08947896dcaa526ec77f1eb902bc033e27
+--- /dev/null
++++ b/src/config/launch-profiles.ts
+@@ -0,0 +1,206 @@
++import { execFile } from "node:child_process";
++import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
++import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
++import { homedir, userInfo } from "node:os";
++import { promisify } from "node:util";
++
++import {
++	type LaunchProfileSave,
++	type LaunchProfileSummary,
++	launchProfileSaveSchema,
++	launchProfilesFileSchema,
++	launchProfileVariableNameSchema,
++	type StoredLaunchProfile,
++	storedLaunchProfileSchema,
++	summarizeLaunchProfile,
++} from "../core/launch-profiles";
++import { lockedFileSystem } from "../fs/locked-file-system";
++
++const execFileAsync = promisify(execFile);
++const PROFILE_DIR = ".cline/kanban";
++const PROFILE_FILE = "launch-profiles.enc.json";
++const KEY_FILE = ".launch-profiles.key";
++const KEYCHAIN_SERVICE = "com.cline.kanban.launch-profiles";
++const ENVELOPE_VERSION = 1;
++
++interface EncryptedEnvelope {
++	version: typeof ENVELOPE_VERSION;
++	iv: string;
++	tag: string;
++	ciphertext: string;
++}
++
++function profileDirectory(): string {
++	return `${homedir()}/${PROFILE_DIR}`;
++}
++
++export function getLaunchProfilesPath(): string {
++	return `${profileDirectory()}/${PROFILE_FILE}`;
++}
++
++function getKeyFilePath(): string {
++	return `${profileDirectory()}/${KEY_FILE}`;
++}
++
++async function readMacKeychain(): Promise<Buffer | null> {
++	if (process.platform !== "darwin") return null;
++	try {
++		const { stdout } = await execFileAsync("/usr/bin/security", [
++			"find-generic-password",
++			"-a",
++			userInfo().username,
++			"-s",
++			KEYCHAIN_SERVICE,
++			"-w",
++		]);
++		const value = stdout.trim();
++		return value ? Buffer.from(value, "base64") : null;
++	} catch {
++		return null;
++	}
++}
++
++async function writeMacKeychain(key: Buffer): Promise<void> {
++	if (process.platform !== "darwin") return;
++	await execFileAsync("/usr/bin/security", [
++		"add-generic-password",
++		"-U",
++		"-a",
++		userInfo().username,
++		"-s",
++		KEYCHAIN_SERVICE,
++		"-w",
++		key.toString("base64"),
++	]);
++}
++
++async function getEncryptionKey(): Promise<Buffer> {
++	const keychainKey = await readMacKeychain();
++	if (keychainKey?.length === 32) return keychainKey;
++	const keyPath = getKeyFilePath();
++	try {
++		const key = await readFile(keyPath);
++		if (key.length === 32) return key;
++	} catch {
++		// Generate below.
++	}
++	const key = randomBytes(32);
++	await mkdir(profileDirectory(), { recursive: true, mode: 0o700 });
++	if (process.platform === "darwin") {
++		try {
++			await writeMacKeychain(key);
++			return key;
++		} catch {
++			// Keep a locked-down fallback if the user has no keychain session.
++		}
++	}
++	await writeFile(keyPath, key, { mode: 0o600 });
++	await chmod(keyPath, 0o600);
++	return key;
++}
++
++export function encryptLaunchProfiles(
++	profiles: StoredLaunchProfile[],
++	key: Buffer,
++	iv = randomBytes(12),
++): EncryptedEnvelope {
++	if (key.length !== 32) throw new Error("Launch profile encryption key must be 32 bytes.");
++	const cipher = createCipheriv("aes-256-gcm", key, iv);
++	const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ profiles })), cipher.final()]);
++	return {
++		version: ENVELOPE_VERSION,
++		iv: iv.toString("base64"),
++		tag: cipher.getAuthTag().toString("base64"),
++		ciphertext: ciphertext.toString("base64"),
++	};
++}
++
++export function decryptLaunchProfiles(envelope: EncryptedEnvelope, key: Buffer): StoredLaunchProfile[] {
++	if (key.length !== 32 || envelope.version !== ENVELOPE_VERSION) throw new Error("Invalid launch profile envelope.");
++	const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
++	decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
++	const plaintext = Buffer.concat([
++		decipher.update(Buffer.from(envelope.ciphertext, "base64")),
++		decipher.final(),
++	]).toString("utf8");
++	const parsed = launchProfilesFileSchema.parse(JSON.parse(plaintext));
++	return parsed.profiles;
++}
++
++async function readStoredProfiles(): Promise<StoredLaunchProfile[]> {
++	let encryptedText: string;
++	try {
++		encryptedText = await readFile(getLaunchProfilesPath(), "utf8");
++	} catch (error) {
++		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
++			return [];
++		}
++		throw error;
++	}
++	const envelope = JSON.parse(encryptedText) as EncryptedEnvelope;
++	return decryptLaunchProfiles(envelope, await getEncryptionKey());
++}
++
++export async function loadLaunchProfileSummaries(): Promise<LaunchProfileSummary[]> {
++	return (await readStoredProfiles()).map(summarizeLaunchProfile);
++}
++
++export async function resolveLaunchProfile(profileId: string | undefined): Promise<StoredLaunchProfile | null> {
++	if (!profileId) return null;
++	const profile = (await readStoredProfiles()).find((candidate) => candidate.id === profileId);
++	return profile ?? null;
++}
++
++function normalizeProfileVariables(
++	variables: Array<{ name: string; value: string }>,
++): Array<{ name: string; value: string }> {
++	const seen = new Set<string>();
++	return variables.filter((variable) => {
++		launchProfileVariableNameSchema.parse(variable.name);
++		const key = variable.name.toUpperCase();
++		if (seen.has(key)) return false;
++		seen.add(key);
++		return true;
++	});
++}
++
++export async function saveLaunchProfiles(inputs: LaunchProfileSave[]): Promise<LaunchProfileSummary[]> {
++	const parsed = inputs.map((input) => launchProfileSaveSchema.parse(input));
++	return await lockedFileSystem.withLocks([{ path: getLaunchProfilesPath(), type: "file" }], async () => {
++		const existing = await readStoredProfiles();
++		const existingById = new Map(existing.map((profile) => [profile.id, profile]));
++		const profiles = parsed.map((input) => {
++			const id = input.id ?? randomUUID().replaceAll("-", "").slice(0, 12);
++			const previous = existingById.get(id);
++			const previousValues = new Map(
++				previous?.variables.map((variable) => [variable.name.toUpperCase(), variable.value]),
++			);
++			const variables = normalizeProfileVariables(
++				input.variables.flatMap((variable) => {
++					const previousValue = previousValues.get(variable.name.toUpperCase());
++					if (variable.value === undefined && previousValue !== undefined) {
++						return [{ name: variable.name, value: previousValue }];
++					}
++					if (variable.value === null || variable.value === "") return [];
++					return variable.value === undefined ? [] : [{ name: variable.name, value: variable.value }];
++				}),
++			);
++			return storedLaunchProfileSchema.parse({
++				id,
++				name: input.name,
++				agentId: input.agentId ?? null,
++				cliArgs: input.cliArgs,
++				variables,
++			});
++		});
++		const envelope = encryptLaunchProfiles(profiles, await getEncryptionKey());
++		await mkdir(profileDirectory(), { recursive: true, mode: 0o700 });
++		await writeFile(getLaunchProfilesPath(), `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
++		await chmod(getLaunchProfilesPath(), 0o600);
++		return profiles.map(summarizeLaunchProfile);
++	});
++}
++
++export async function deleteLaunchProfilesFile(): Promise<void> {
++	await rm(getLaunchProfilesPath(), { force: true });
++}
+diff --git a/src/core/launch-profiles.ts b/src/core/launch-profiles.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f724811bdfbcad87bea3346111cdc7deae28de18
+--- /dev/null
++++ b/src/core/launch-profiles.ts
+@@ -0,0 +1,104 @@
++import { z } from "zod";
++
++// Keep this module dependency-free from api-contract: api-contract imports
++// these schemas for the browser/runtime boundary, so importing it back here
++// would create an initialization cycle.
++const launchProfileAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "kiro", "cline"]);
++
++const safeIdentifier = z
++	.string()
++	.trim()
++	.min(1)
++	.max(80)
++	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Use letters, numbers, dots, underscores, or hyphens.");
++
++export const launchProfileVariableNameSchema = z
++	.string()
++	.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use a valid environment variable name")
++	.refine((name) => !/^KANBAN_/i.test(name), "KANBAN_ variables are reserved");
++
++export const launchProfileVariableSchema = z.object({
++	name: launchProfileVariableNameSchema,
++	value: z.string().refine((value) => !value.includes("\0"), "Environment values cannot contain NUL"),
++});
++
++export const launchProfileSummaryVariableSchema = z.object({
++	name: launchProfileVariableNameSchema,
++	configured: z.boolean(),
++});
++
++export const launchProfileSummarySchema = z.object({
++	id: safeIdentifier,
++	name: z.string().trim().min(1).max(80),
++	agentId: launchProfileAgentIdSchema.nullable(),
++	cliArgs: z
++		.array(
++			z
++				.string()
++				.max(500)
++				.refine((value) => !/[\0\r\n]/.test(value)),
++		)
++		.max(100),
++	variables: z.array(launchProfileSummaryVariableSchema).max(100),
++});
++
++export const launchProfileSaveVariableSchema = z.object({
++	name: launchProfileVariableNameSchema,
++	/** Undefined preserves an already stored secret; null or an empty string clears it. */
++	value: z
++		.string()
++		.nullable()
++		.optional()
++		.refine(
++			(value) => value === undefined || value === null || !value.includes("\0"),
++			"Environment values cannot contain NUL",
++		),
++});
++
++export const launchProfileSaveSchema = z.object({
++	id: safeIdentifier.optional(),
++	name: z.string().trim().min(1).max(80),
++	agentId: launchProfileAgentIdSchema.nullable().optional(),
++	cliArgs: z
++		.array(
++			z
++				.string()
++				.max(500)
++				.refine((value) => !/[\0\r\n]/.test(value)),
++		)
++		.max(100),
++	variables: z.array(launchProfileSaveVariableSchema).max(100),
++});
++
++export const storedLaunchProfileSchema = z.object({
++	id: safeIdentifier,
++	name: z.string().trim().min(1).max(80),
++	agentId: launchProfileAgentIdSchema.nullable(),
++	cliArgs: z
++		.array(
++			z
++				.string()
++				.max(500)
++				.refine((value) => !/[\0\r\n]/.test(value)),
++		)
++		.max(100),
++	variables: z.array(launchProfileVariableSchema).max(100),
++});
++
++export const launchProfilesFileSchema = z.object({
++	profiles: z.array(storedLaunchProfileSchema).max(50),
++});
++
++export type LaunchProfileSummary = z.infer<typeof launchProfileSummarySchema>;
++export type LaunchProfileSave = z.infer<typeof launchProfileSaveSchema>;
++export type StoredLaunchProfile = z.infer<typeof storedLaunchProfileSchema>;
++
++export function summarizeLaunchProfile(profile: StoredLaunchProfile): LaunchProfileSummary {
++	return {
++		id: profile.id,
++		name: profile.name,
++		agentId: profile.agentId,
++		cliArgs: [...profile.cliArgs],
++		variables: profile.variables.map(({ name }) => ({ name, configured: true })),
++	};
++}
+diff --git a/test/runtime/launch-profiles.test.ts b/test/runtime/launch-profiles.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8f6375b964d9715cbb27bc836ac061e7fa4b6b6
+--- /dev/null
++++ b/test/runtime/launch-profiles.test.ts
+@@ -0,0 +1,29 @@
++import { randomBytes } from "node:crypto";
++import { describe, expect, it } from "vitest";
++import { decryptLaunchProfiles, encryptLaunchProfiles } from "../../src/config/launch-profiles";
++import type { StoredLaunchProfile } from "../../src/core/launch-profiles";
++
++describe("launch profile encryption", () => {
++	const profiles: StoredLaunchProfile[] = [
++		{
++			id: "openai-work",
++			name: "OpenAI work",
++			agentId: "codex",
++			cliArgs: ["-c", "model_context_window=100000"],
++			variables: [{ name: "OPENAI_API_KEY", value: "secret-value" }],
++		},
++	];
++
++	it("round trips profiles without putting secrets in the envelope plaintext", () => {
++		const key = randomBytes(32);
++		const envelope = encryptLaunchProfiles(profiles, key);
++		expect(JSON.stringify(envelope)).not.toContain("secret-value");
++		expect(() => decryptLaunchProfiles(envelope, randomBytes(32))).toThrow();
++	});
++
++	it("decrypts with the original key", () => {
++		const key = randomBytes(32);
++		const envelope = encryptLaunchProfiles(profiles, key);
++		expect(decryptLaunchProfiles(envelope, key)).toEqual(profiles);
++	});
++});

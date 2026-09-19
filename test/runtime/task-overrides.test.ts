@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runtimeBoardCardSchema, runtimeTaskSessionStartRequestSchema } from "../../src/core/api-contract";
+import type { StoredLaunchProfile } from "../../src/core/launch-profiles";
 import { addTaskToColumn, updateTask } from "../../src/core/task-board-mutations";
 import { taskOverridesSchema } from "../../src/core/task-overrides";
 import { resolveTaskLaunchOverrides } from "../../src/terminal/task-launch-overrides";
@@ -58,6 +59,31 @@ describe("task overrides", () => {
 			expect(resolveTaskLaunchOverrides(agentId, []).env).toBeUndefined();
 		},
 	);
+
+	it("combines saved profile args and secrets before task-level overrides", () => {
+		const profile: StoredLaunchProfile = {
+			id: "profile-1",
+			name: "OpenAI work",
+			agentId: "codex",
+			cliArgs: ["-c", "profile_setting=true"],
+			variables: [{ name: "OPENAI_API_KEY", value: "profile-key" }],
+		};
+		expect(
+			resolveTaskLaunchOverrides(
+				"codex",
+				["--model", "default"],
+				{
+					cliArgs: ["-c", "task_setting=true"],
+					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
+				},
+				profile,
+			),
+		).toEqual({
+			args: ["-c", "profile_setting=true", "-c", "task_setting=true", "--model", "default"],
+			env: { OPENAI_API_KEY: "task-key" },
+			modelId: "default",
+		});
+	});
 
 	it("does not apply CLI settings to the native Cline SDK", () => {
 		expect(resolveTaskLaunchOverrides("cline", [], settings)).toEqual({ args: [], env: undefined, modelId: null });

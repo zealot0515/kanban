@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import { NativeSelect } from "@/components/ui/native-select";
 import type {
+	LaunchProfileSummary,
 	RuntimeAgentId,
 	RuntimeClineReasoningEffort,
 	RuntimeTaskClineSettings,
@@ -108,6 +109,7 @@ export function TaskCreateDialog({
 	onImagesChange,
 	onCreate,
 	onCreateAndStart,
+	onStartInteractive,
 	onCreateMultiple,
 	onCreateAndStartMultiple,
 	onCreateStartAndOpen,
@@ -132,6 +134,7 @@ export function TaskCreateDialog({
 	defaultProviderId,
 	defaultModelId,
 	defaultReasoningEffort,
+	launchProfiles = [],
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -141,6 +144,7 @@ export function TaskCreateDialog({
 	onImagesChange: Dispatch<SetStateAction<TaskImage[]>>;
 	onCreate: (options?: { keepDialogOpen?: boolean }) => string | null;
 	onCreateAndStart?: (options?: { keepDialogOpen?: boolean }) => string | null;
+	onStartInteractive?: () => void;
 	onCreateMultiple: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
 	onCreateAndStartMultiple?: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
 	onCreateStartAndOpen?: (options?: { keepDialogOpen?: boolean }) => string | null;
@@ -169,6 +173,7 @@ export function TaskCreateDialog({
 	defaultModelId?: string | null;
 	/** Default Cline reasoning effort from runtimeConfig.clineProviderSettings.reasoningEffort */
 	defaultReasoningEffort?: RuntimeClineReasoningEffort | null;
+	launchProfiles?: LaunchProfileSummary[];
 }): ReactElement {
 	const [mode, setMode] = useState<"single" | "multi">("single");
 	const [createMore, setCreateMore] = useState(false);
@@ -299,18 +304,26 @@ export function TaskCreateDialog({
 	}, [createMore, onCreate, resetForCreateMore]);
 
 	const handleCreateAndStartSingle = useCallback(() => {
+		if (!prompt.trim()) {
+			onStartInteractive?.();
+			return;
+		}
 		const createdTaskId = onCreateAndStart?.({ keepDialogOpen: createMore });
 		if (createMore && createdTaskId) {
 			resetForCreateMore();
 		}
-	}, [createMore, onCreateAndStart, resetForCreateMore]);
+	}, [createMore, onCreateAndStart, onStartInteractive, prompt, resetForCreateMore]);
 
 	const handleCreateStartAndOpenSingle = useCallback(() => {
+		if (!prompt.trim()) {
+			onStartInteractive?.();
+			return;
+		}
 		const createdTaskId = onCreateStartAndOpen?.({ keepDialogOpen: createMore });
 		if (createMore && createdTaskId) {
 			resetForCreateMore();
 		}
-	}, [createMore, onCreateStartAndOpen, resetForCreateMore]);
+	}, [createMore, onCreateStartAndOpen, onStartInteractive, prompt, resetForCreateMore]);
 
 	const handleRunSingleStartAction = useCallback(
 		(action: TaskCreateStartAction) => {
@@ -609,6 +622,7 @@ export function TaskCreateDialog({
 						value={taskOverrides}
 						onChange={onTaskOverridesChange}
 						agentId={agentId ?? defaultAgentId}
+						launchProfiles={launchProfiles}
 					/>
 				) : null}
 			</DialogBody>
@@ -642,7 +656,7 @@ export function TaskCreateDialog({
 										variant="primary"
 										size="sm"
 										onClick={() => handleRunSingleStartAction(primaryStartAction)}
-										disabled={!prompt.trim() || !branchRef}
+										disabled={prompt.trim() ? !branchRef : !onStartInteractive}
 										className={onCreateStartAndOpen ? "rounded-r-none" : undefined}
 									>
 										<span className="inline-flex items-center">
@@ -655,7 +669,7 @@ export function TaskCreateDialog({
 											<Button
 												variant="primary"
 												size="sm"
-												disabled={!prompt.trim() || !branchRef}
+												disabled={prompt.trim() ? !branchRef : !onStartInteractive}
 												className="rounded-l-none border-l border-white/20 px-1"
 												aria-label="More start options"
 											>

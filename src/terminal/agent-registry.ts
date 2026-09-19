@@ -6,6 +6,7 @@ import type {
 	RuntimeClineProviderSettings,
 	RuntimeConfigResponse,
 } from "../core/api-contract";
+import type { LaunchProfileSummary } from "../core/launch-profiles";
 import { isBinaryAvailableOnPath } from "./command-discovery";
 
 export interface ResolvedAgentCommand {
@@ -101,6 +102,7 @@ export function resolveAgentCommand(runtimeConfig: RuntimeConfigState): Resolved
 export function buildRuntimeConfigResponse(
 	runtimeConfig: RuntimeConfigState,
 	clineProviderSettings: RuntimeClineProviderSettings,
+	launchProfiles: LaunchProfileSummary[] = [],
 ): RuntimeConfigResponse {
 	const detectedCommands = detectInstalledCommands();
 	const agents = getCuratedDefinitions(runtimeConfig, detectedCommands);
@@ -124,5 +126,6 @@ export function buildRuntimeConfigResponse(
 		openPrPromptTemplate: runtimeConfig.openPrPromptTemplate,
 		commitPromptTemplateDefault: runtimeConfig.commitPromptTemplateDefault,
 		openPrPromptTemplateDefault: runtimeConfig.openPrPromptTemplateDefault,
+		launchProfiles,
 	};
 }

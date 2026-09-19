@@ -101,6 +101,8 @@ export interface StartShellSessionRequest {
 	binary: string;
 	args?: string[];
 	env?: Record<string, string | undefined>;
+	agentId?: AgentAdapterLaunchInput["agentId"] | null;
+	modelId?: string | null;
 }
 
 function now(): number {
@@ -337,7 +339,11 @@ export class TerminalSessionManager implements TerminalSessionService {
 			workspaceId: request.workspaceId,
 		});
 
-		const env = buildTerminalEnvironment(request.env, launch.env);
+		// The task/profile environment is user configuration and must win over
+		// adapter-injected values. This is especially important for credentials
+		// such as OPENAI_API_KEY, which callers intentionally use to override the
+		// inherited shell environment for one task.
+		const env = buildTerminalEnvironment(launch.env, request.env);
 
 		// Adapters can wrap the configured agent binary when they need extra runtime wiring
 		// (for example, Codex uses a wrapper script to watch session logs for hook transitions).
@@ -650,7 +656,8 @@ export class TerminalSessionManager implements TerminalSessionService {
 			terminalStateMirror.dispose();
 			const summary = updateSummary(entry, {
 				state: "failed",
-				agentId: null,
+				agentId: request.agentId ?? null,
+				modelId: request.modelId ?? null,
 				workspacePath: request.cwd,
 				pid: null,
 				startedAt: null,
@@ -687,7 +694,8 @@ export class TerminalSessionManager implements TerminalSessionService {
 
 		updateSummary(entry, {
 			state: "running",
-			agentId: null,
+			agentId: request.agentId ?? null,
+			modelId: request.modelId ?? null,
 			workspacePath: request.cwd,
 			pid: session.pid,
 			startedAt: now(),

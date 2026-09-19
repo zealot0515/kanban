@@ -4,16 +4,18 @@ import { Plus, X } from "lucide-react";
 import { useId, useState } from "react";
 import { TaskLabelsEditor } from "@/components/task-labels-editor";
 import { Button } from "@/components/ui/button";
-import type { RuntimeAgentId, TaskOverrides } from "@/runtime/types";
+import type { LaunchProfileSummary, RuntimeAgentId, TaskOverrides } from "@/runtime/types";
 
 export function TaskOverridesEditor({
 	value = {},
 	onChange,
 	agentId,
+	launchProfiles = [],
 }: {
 	value?: TaskOverrides;
 	onChange: (value: TaskOverrides) => void;
 	agentId?: RuntimeAgentId | null;
+	launchProfiles?: LaunchProfileSummary[];
 }) {
 	const id = useId();
 	const [showValues, setShowValues] = useState(false);
@@ -24,6 +26,36 @@ export function TaskOverridesEditor({
 	return (
 		<div className="mt-3 space-y-3 border-t border-border pt-3">
 			<TaskLabelsEditor labels={value.labels} onChange={(labels) => onChange({ ...value, labels })} />
+			{agentId && agentId !== "cline" && launchProfiles.length > 0 ? (
+				<div className="space-y-1">
+					<label htmlFor={`${id}-profile`} className="block text-xs text-text-secondary">
+						Saved launch profile
+					</label>
+					<select
+						id={`${id}-profile`}
+						value={value.launchProfileId ?? ""}
+						onChange={(event) =>
+							onChange({
+								...value,
+								launchProfileId: event.target.value || undefined,
+							})
+						}
+						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
+					>
+						<option value="">No saved profile</option>
+						{launchProfiles
+							.filter((profile) => profile.agentId === null || profile.agentId === agentId)
+							.map((profile) => (
+								<option key={profile.id} value={profile.id}>
+									{profile.name}
+								</option>
+							))}
+					</select>
+					<p className="text-xs text-text-tertiary">
+						Applies encrypted variables and saved CLI arguments when this task starts.
+					</p>
+				</div>
+			) : null}
 			{agentId === "codex" || agentId === "claude" ? (
 				<div className="space-y-1">
 					<label htmlFor={`${id}-model`} className="block text-xs text-text-secondary">
@@ -117,6 +149,27 @@ export function TaskOverridesEditor({
 							</div>
 						</>
 					) : null}
+				</div>
+			) : null}
+			{agentId && agentId !== "cline" ? (
+				<div className="space-y-1">
+					<label htmlFor={`${id}-args`} className="block text-xs text-text-secondary">
+						Additional CLI arguments
+					</label>
+					<textarea
+						id={`${id}-args`}
+						value={(value.cliArgs ?? []).join("\n")}
+						rows={2}
+						placeholder={"One argument per line, e.g.\n-c\nmodel_context_window=100000"}
+						onChange={(event) => {
+							const cliArgs = event.target.value.split("\n").filter((arg) => arg.length > 0);
+							onChange({ ...value, cliArgs: cliArgs.length > 0 ? cliArgs : undefined });
+						}}
+						className="w-full resize-y rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary focus:outline-border-focus"
+					/>
+					<p className="text-xs text-text-tertiary">
+						Each line is one argument; no shell quoting or expansion is performed.
+					</p>
 				</div>
 			) : null}
 			{error ? (

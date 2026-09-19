@@ -415,6 +415,7 @@ export default function App(): ReactElement {
 		handleToggleExpandHomeTerminal,
 		handleToggleExpandDetailTerminal,
 		handleToggleHomeTerminal,
+		startInteractiveAgentSession,
 		handleToggleDetailTerminal,
 		handleSendAgentCommandToHomeTerminal,
 		handleSendAgentCommandToDetailTerminal,
@@ -433,6 +434,24 @@ export default function App(): ReactElement {
 		upsertSession,
 		sendTaskSessionInput,
 	});
+
+	const handleStartInteractiveAgent = useCallback(() => {
+		const agentId = newTaskAgentId ?? runtimeProjectConfig?.selectedAgentId ?? null;
+		if (!agentId) {
+			return;
+		}
+		void startInteractiveAgentSession(agentId, newTaskOverrides).then((started) => {
+			if (started) {
+				handleCancelCreateTask();
+			}
+		});
+	}, [
+		handleCancelCreateTask,
+		newTaskAgentId,
+		newTaskOverrides,
+		runtimeProjectConfig?.selectedAgentId,
+		startInteractiveAgentSession,
+	]);
 	const homeTerminalSummary = sessions[homeTerminalTaskId] ?? null;
 	const homeSidebarAgentPanel = useHomeSidebarAgentPanel({
 		currentProjectId,
@@ -796,6 +815,7 @@ export default function App(): ReactElement {
 			defaultProviderId={defaultTaskClineProviderId}
 			defaultModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
 			defaultReasoningEffort={runtimeProjectConfig?.clineProviderSettings?.reasoningEffort ?? null}
+			launchProfiles={runtimeProjectConfig?.launchProfiles ?? []}
 			mode="edit"
 			idPrefix={`inline-edit-task-${editingTaskId}`}
 		/>
@@ -1125,6 +1145,7 @@ export default function App(): ReactElement {
 					onImagesChange={setNewTaskImages}
 					onCreate={handleCreateTask}
 					onCreateAndStart={handleCreateAndStartTask}
+					onStartInteractive={handleStartInteractiveAgent}
 					onCreateStartAndOpen={handleCreateStartAndOpenTask}
 					onCreateMultiple={handleCreateTasks}
 					onCreateAndStartMultiple={handleCreateAndStartTasks}
@@ -1149,6 +1170,7 @@ export default function App(): ReactElement {
 					defaultProviderId={defaultTaskClineProviderId}
 					defaultModelId={runtimeProjectConfig?.clineProviderSettings?.modelId ?? null}
 					defaultReasoningEffort={runtimeProjectConfig?.clineProviderSettings?.reasoningEffort ?? null}
+					launchProfiles={runtimeProjectConfig?.launchProfiles ?? []}
 				/>
 				<ClearTrashDialog
 					open={isClearTrashDialogOpen}
