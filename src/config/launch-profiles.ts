@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { promisify } from "node:util";
+import { resolveCliArguments } from "../core/cli-arguments";
 
 import {
 	type LaunchProfileSave,
@@ -189,7 +190,9 @@ export async function saveLaunchProfiles(inputs: LaunchProfileSave[]): Promise<L
 				id,
 				name: input.name,
 				agentId: input.agentId ?? null,
-				cliArgs: input.cliArgs,
+				codexProvider: input.codexProvider,
+				cliArgs: resolveCliArguments(input),
+				cliArgsInput: input.cliArgsInput,
 				variables,
 			});
 		});

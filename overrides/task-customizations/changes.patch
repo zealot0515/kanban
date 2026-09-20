@@ -10,57 +10,6 @@ index e91336c2e19a650459f17d95ccf0f070c880ac88..5b7d4877855c521344850399e6d3e04d
  		this.messageRepository.setTaskEntry(request.taskId, entry);
  		this.pendingTurnCancelTaskIds.delete(request.taskId);
  
-diff --git a/src/commands/hook-events/claude-model.ts b/src/commands/hook-events/claude-model.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..b7861c7c9b8b259b1716598d126857fe78ffe815
---- /dev/null
-+++ b/src/commands/hook-events/claude-model.ts
-@@ -0,0 +1,45 @@
-+import { open } from "node:fs/promises";
-+import type { RuntimeTaskHookActivity } from "../../core/api-contract";
-+import { asRecord, readStringField } from "./hook-utils";
-+
-+export function resolveClaudeTranscriptModel(text: string): string | null {
-+	const lines = text.split(/\r?\n/);
-+	for (let index = lines.length - 1; index >= 0; index--) {
-+		try {
-+			const entry = asRecord(JSON.parse(lines[index]));
-+			if (!entry || entry.type !== "assistant" || entry.isSidechain === true) continue;
-+			const message = asRecord(entry.message);
-+			const model = message ? readStringField(message, "model") : null;
-+			if (model && model !== "<synthetic>") return model;
-+		} catch {
-+			/* The first/last line of a transcript tail may be incomplete. */
-+		}
-+	}
-+	return null;
-+}
-+
-+export async function enrichClaudeModelMetadata<
-+	T extends {
-+		payload?: Record<string, unknown> | null;
-+		metadata?: Partial<RuntimeTaskHookActivity>;
-+	},
-+>(args: T): Promise<T> {
-+	if (args.metadata?.source !== "claude" || !args.payload) return args;
-+	const path = readStringField(args.payload, "transcript_path");
-+	if (!path) return args;
-+	let file: Awaited<ReturnType<typeof open>> | undefined;
-+	try {
-+		file = await open(path, "r");
-+		const stat = await file.stat();
-+		if (!stat.isFile()) return args;
-+		const bytes = Math.min(stat.size, 1024 * 1024);
-+		const buffer = Buffer.alloc(bytes);
-+		const { bytesRead } = await file.read(buffer, 0, bytes, stat.size - bytes);
-+		const modelId = resolveClaudeTranscriptModel(buffer.subarray(0, bytesRead).toString("utf8"));
-+		return modelId ? { ...args, metadata: { ...args.metadata, modelId } } : args;
-+	} catch {
-+		return args;
-+	} finally {
-+		await file?.close();
-+	}
-+}
 diff --git a/src/commands/hook-events/codex-hook-events.ts b/src/commands/hook-events/codex-hook-events.ts
 index f0d059b558330440cfb2cfb65a68cee94217e39d..cab612176c7820031e187dea21505190f567bec6 100644
 --- a/src/commands/hook-events/codex-hook-events.ts
@@ -165,218 +114,6 @@ index db2bc653b02dd8a139f80847d103fcbdb6ca84e8..10b1191caa5bcbb13936a0c0f0708897
  		});
  		if (!started.ok || !started.summary) {
  			throw new Error(started.error ?? "Could not start task session.");
-diff --git a/src/config/launch-profiles.ts b/src/config/launch-profiles.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..fd896a08947896dcaa526ec77f1eb902bc033e27
---- /dev/null
-+++ b/src/config/launch-profiles.ts
-@@ -0,0 +1,206 @@
-+import { execFile } from "node:child_process";
-+import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-+import { homedir, userInfo } from "node:os";
-+import { promisify } from "node:util";
-+
-+import {
-+	type LaunchProfileSave,
-+	type LaunchProfileSummary,
-+	launchProfileSaveSchema,
-+	launchProfilesFileSchema,
-+	launchProfileVariableNameSchema,
-+	type StoredLaunchProfile,
-+	storedLaunchProfileSchema,
-+	summarizeLaunchProfile,
-+} from "../core/launch-profiles";
-+import { lockedFileSystem } from "../fs/locked-file-system";
-+
-+const execFileAsync = promisify(execFile);
-+const PROFILE_DIR = ".cline/kanban";
-+const PROFILE_FILE = "launch-profiles.enc.json";
-+const KEY_FILE = ".launch-profiles.key";
-+const KEYCHAIN_SERVICE = "com.cline.kanban.launch-profiles";
-+const ENVELOPE_VERSION = 1;
-+
-+interface EncryptedEnvelope {
-+	version: typeof ENVELOPE_VERSION;
-+	iv: string;
-+	tag: string;
-+	ciphertext: string;
-+}
-+
-+function profileDirectory(): string {
-+	return `${homedir()}/${PROFILE_DIR}`;
-+}
-+
-+export function getLaunchProfilesPath(): string {
-+	return `${profileDirectory()}/${PROFILE_FILE}`;
-+}
-+
-+function getKeyFilePath(): string {
-+	return `${profileDirectory()}/${KEY_FILE}`;
-+}
-+
-+async function readMacKeychain(): Promise<Buffer | null> {
-+	if (process.platform !== "darwin") return null;
-+	try {
-+		const { stdout } = await execFileAsync("/usr/bin/security", [
-+			"find-generic-password",
-+			"-a",
-+			userInfo().username,
-+			"-s",
-+			KEYCHAIN_SERVICE,
-+			"-w",
-+		]);
-+		const value = stdout.trim();
-+		return value ? Buffer.from(value, "base64") : null;
-+	} catch {
-+		return null;
-+	}
-+}
-+
-+async function writeMacKeychain(key: Buffer): Promise<void> {
-+	if (process.platform !== "darwin") return;
-+	await execFileAsync("/usr/bin/security", [
-+		"add-generic-password",
-+		"-U",
-+		"-a",
-+		userInfo().username,
-+		"-s",
-+		KEYCHAIN_SERVICE,
-+		"-w",
-+		key.toString("base64"),
-+	]);
-+}
-+
-+async function getEncryptionKey(): Promise<Buffer> {
-+	const keychainKey = await readMacKeychain();
-+	if (keychainKey?.length === 32) return keychainKey;
-+	const keyPath = getKeyFilePath();
-+	try {
-+		const key = await readFile(keyPath);
-+		if (key.length === 32) return key;
-+	} catch {
-+		// Generate below.
-+	}
-+	const key = randomBytes(32);
-+	await mkdir(profileDirectory(), { recursive: true, mode: 0o700 });
-+	if (process.platform === "darwin") {
-+		try {
-+			await writeMacKeychain(key);
-+			return key;
-+		} catch {
-+			// Keep a locked-down fallback if the user has no keychain session.
-+		}
-+	}
-+	await writeFile(keyPath, key, { mode: 0o600 });
-+	await chmod(keyPath, 0o600);
-+	return key;
-+}
-+
-+export function encryptLaunchProfiles(
-+	profiles: StoredLaunchProfile[],
-+	key: Buffer,
-+	iv = randomBytes(12),
-+): EncryptedEnvelope {
-+	if (key.length !== 32) throw new Error("Launch profile encryption key must be 32 bytes.");
-+	const cipher = createCipheriv("aes-256-gcm", key, iv);
-+	const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ profiles })), cipher.final()]);
-+	return {
-+		version: ENVELOPE_VERSION,
-+		iv: iv.toString("base64"),
-+		tag: cipher.getAuthTag().toString("base64"),
-+		ciphertext: ciphertext.toString("base64"),
-+	};
-+}
-+
-+export function decryptLaunchProfiles(envelope: EncryptedEnvelope, key: Buffer): StoredLaunchProfile[] {
-+	if (key.length !== 32 || envelope.version !== ENVELOPE_VERSION) throw new Error("Invalid launch profile envelope.");
-+	const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
-+	decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
-+	const plaintext = Buffer.concat([
-+		decipher.update(Buffer.from(envelope.ciphertext, "base64")),
-+		decipher.final(),
-+	]).toString("utf8");
-+	const parsed = launchProfilesFileSchema.parse(JSON.parse(plaintext));
-+	return parsed.profiles;
-+}
-+
-+async function readStoredProfiles(): Promise<StoredLaunchProfile[]> {
-+	let encryptedText: string;
-+	try {
-+		encryptedText = await readFile(getLaunchProfilesPath(), "utf8");
-+	} catch (error) {
-+		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-+			return [];
-+		}
-+		throw error;
-+	}
-+	const envelope = JSON.parse(encryptedText) as EncryptedEnvelope;
-+	return decryptLaunchProfiles(envelope, await getEncryptionKey());
-+}
-+
-+export async function loadLaunchProfileSummaries(): Promise<LaunchProfileSummary[]> {
-+	return (await readStoredProfiles()).map(summarizeLaunchProfile);
-+}
-+
-+export async function resolveLaunchProfile(profileId: string | undefined): Promise<StoredLaunchProfile | null> {
-+	if (!profileId) return null;
-+	const profile = (await readStoredProfiles()).find((candidate) => candidate.id === profileId);
-+	return profile ?? null;
-+}
-+
-+function normalizeProfileVariables(
-+	variables: Array<{ name: string; value: string }>,
-+): Array<{ name: string; value: string }> {
-+	const seen = new Set<string>();
-+	return variables.filter((variable) => {
-+		launchProfileVariableNameSchema.parse(variable.name);
-+		const key = variable.name.toUpperCase();
-+		if (seen.has(key)) return false;
-+		seen.add(key);
-+		return true;
-+	});
-+}
-+
-+export async function saveLaunchProfiles(inputs: LaunchProfileSave[]): Promise<LaunchProfileSummary[]> {
-+	const parsed = inputs.map((input) => launchProfileSaveSchema.parse(input));
-+	return await lockedFileSystem.withLocks([{ path: getLaunchProfilesPath(), type: "file" }], async () => {
-+		const existing = await readStoredProfiles();
-+		const existingById = new Map(existing.map((profile) => [profile.id, profile]));
-+		const profiles = parsed.map((input) => {
-+			const id = input.id ?? randomUUID().replaceAll("-", "").slice(0, 12);
-+			const previous = existingById.get(id);
-+			const previousValues = new Map(
-+				previous?.variables.map((variable) => [variable.name.toUpperCase(), variable.value]),
-+			);
-+			const variables = normalizeProfileVariables(
-+				input.variables.flatMap((variable) => {
-+					const previousValue = previousValues.get(variable.name.toUpperCase());
-+					if (variable.value === undefined && previousValue !== undefined) {
-+						return [{ name: variable.name, value: previousValue }];
-+					}
-+					if (variable.value === null || variable.value === "") return [];
-+					return variable.value === undefined ? [] : [{ name: variable.name, value: variable.value }];
-+				}),
-+			);
-+			return storedLaunchProfileSchema.parse({
-+				id,
-+				name: input.name,
-+				agentId: input.agentId ?? null,
-+				cliArgs: input.cliArgs,
-+				variables,
-+			});
-+		});
-+		const envelope = encryptLaunchProfiles(profiles, await getEncryptionKey());
-+		await mkdir(profileDirectory(), { recursive: true, mode: 0o700 });
-+		await writeFile(getLaunchProfilesPath(), `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
-+		await chmod(getLaunchProfilesPath(), 0o600);
-+		return profiles.map(summarizeLaunchProfile);
-+	});
-+}
-+
-+export async function deleteLaunchProfilesFile(): Promise<void> {
-+	await rm(getLaunchProfilesPath(), { force: true });
-+}
 diff --git a/src/core/api-contract.ts b/src/core/api-contract.ts
 index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..3a72ddd231e374ad845d74d31869049055744482 100644
 --- a/src/core/api-contract.ts
@@ -441,116 +178,6 @@ index 774ecf8573067c2a6b982e6eaeb8ed947102bd6c..3a72ddd231e374ad845d74d318690490
  });
  export type RuntimeTaskSessionStartRequest = z.infer<typeof runtimeTaskSessionStartRequestSchema>;
  
-diff --git a/src/core/launch-profiles.ts b/src/core/launch-profiles.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..f724811bdfbcad87bea3346111cdc7deae28de18
---- /dev/null
-+++ b/src/core/launch-profiles.ts
-@@ -0,0 +1,104 @@
-+import { z } from "zod";
-+
-+// Keep this module dependency-free from api-contract: api-contract imports
-+// these schemas for the browser/runtime boundary, so importing it back here
-+// would create an initialization cycle.
-+const launchProfileAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "kiro", "cline"]);
-+
-+const safeIdentifier = z
-+	.string()
-+	.trim()
-+	.min(1)
-+	.max(80)
-+	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Use letters, numbers, dots, underscores, or hyphens.");
-+
-+export const launchProfileVariableNameSchema = z
-+	.string()
-+	.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use a valid environment variable name")
-+	.refine((name) => !/^KANBAN_/i.test(name), "KANBAN_ variables are reserved");
-+
-+export const launchProfileVariableSchema = z.object({
-+	name: launchProfileVariableNameSchema,
-+	value: z.string().refine((value) => !value.includes("\0"), "Environment values cannot contain NUL"),
-+});
-+
-+export const launchProfileSummaryVariableSchema = z.object({
-+	name: launchProfileVariableNameSchema,
-+	configured: z.boolean(),
-+});
-+
-+export const launchProfileSummarySchema = z.object({
-+	id: safeIdentifier,
-+	name: z.string().trim().min(1).max(80),
-+	agentId: launchProfileAgentIdSchema.nullable(),
-+	cliArgs: z
-+		.array(
-+			z
-+				.string()
-+				.max(500)
-+				.refine((value) => !/[\0\r\n]/.test(value)),
-+		)
-+		.max(100),
-+	variables: z.array(launchProfileSummaryVariableSchema).max(100),
-+});
-+
-+export const launchProfileSaveVariableSchema = z.object({
-+	name: launchProfileVariableNameSchema,
-+	/** Undefined preserves an already stored secret; null or an empty string clears it. */
-+	value: z
-+		.string()
-+		.nullable()
-+		.optional()
-+		.refine(
-+			(value) => value === undefined || value === null || !value.includes("\0"),
-+			"Environment values cannot contain NUL",
-+		),
-+});
-+
-+export const launchProfileSaveSchema = z.object({
-+	id: safeIdentifier.optional(),
-+	name: z.string().trim().min(1).max(80),
-+	agentId: launchProfileAgentIdSchema.nullable().optional(),
-+	cliArgs: z
-+		.array(
-+			z
-+				.string()
-+				.max(500)
-+				.refine((value) => !/[\0\r\n]/.test(value)),
-+		)
-+		.max(100),
-+	variables: z.array(launchProfileSaveVariableSchema).max(100),
-+});
-+
-+export const storedLaunchProfileSchema = z.object({
-+	id: safeIdentifier,
-+	name: z.string().trim().min(1).max(80),
-+	agentId: launchProfileAgentIdSchema.nullable(),
-+	cliArgs: z
-+		.array(
-+			z
-+				.string()
-+				.max(500)
-+				.refine((value) => !/[\0\r\n]/.test(value)),
-+		)
-+		.max(100),
-+	variables: z.array(launchProfileVariableSchema).max(100),
-+});
-+
-+export const launchProfilesFileSchema = z.object({
-+	profiles: z.array(storedLaunchProfileSchema).max(50),
-+});
-+
-+export type LaunchProfileSummary = z.infer<typeof launchProfileSummarySchema>;
-+export type LaunchProfileSave = z.infer<typeof launchProfileSaveSchema>;
-+export type StoredLaunchProfile = z.infer<typeof storedLaunchProfileSchema>;
-+
-+export function summarizeLaunchProfile(profile: StoredLaunchProfile): LaunchProfileSummary {
-+	return {
-+		id: profile.id,
-+		name: profile.name,
-+		agentId: profile.agentId,
-+		cliArgs: [...profile.cliArgs],
-+		variables: profile.variables.map(({ name }) => ({ name, configured: true })),
-+	};
-+}
 diff --git a/src/core/task-board-mutations.ts b/src/core/task-board-mutations.ts
 index 8ae5e93711507106a311f0ea62dffa0523d555b1..4d5646202d2e68b5ffba78f67c8282c0556c828b 100644
 --- a/src/core/task-board-mutations.ts
@@ -617,70 +244,6 @@ index 8ae5e93711507106a311f0ea62dffa0523d555b1..4d5646202d2e68b5ffba78f67c8282c0
  				agentId: input.agentId === undefined ? card.agentId : (input.agentId ?? undefined),
  				clineSettings:
  					input.clineSettings === undefined
-diff --git a/src/core/task-overrides.ts b/src/core/task-overrides.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..ddf1db9c60239f614ea4013dc898f0b8411f0348
---- /dev/null
-+++ b/src/core/task-overrides.ts
-@@ -0,0 +1,58 @@
-+import { z } from "zod";
-+
-+export const taskOverridesSchema = z.object({
-+	labels: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
-+	cliModel: z
-+		.string()
-+		.trim()
-+		.max(200)
-+		.refine((value) => !/[\r\n\0]/.test(value), "Invalid model ID")
-+		.optional(),
-+	launchProfileId: z
-+		.string()
-+		.trim()
-+		.max(80)
-+		.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid launch profile ID")
-+		.optional(),
-+	cliArgs: z
-+		.array(
-+			z
-+				.string()
-+				.max(500)
-+				.refine((value) => !/[\0\r\n]/.test(value), "CLI arguments cannot contain NUL or newlines"),
-+		)
-+		.max(100)
-+		.optional(),
-+	environment: z
-+		.object({
-+			enabled: z.boolean(),
-+			variables: z
-+				.array(
-+					z.object({
-+						name: z
-+							.string()
-+							.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use a valid environment variable name")
-+							.refine((name) => !/^KANBAN_/i.test(name), "KANBAN_ variables are reserved"),
-+						value: z.string().refine((value) => !value.includes("\0"), "Environment values cannot contain NUL"),
-+					}),
-+				)
-+				.max(100)
-+				.refine(
-+					(variables) => new Set(variables.map(({ name }) => name.toUpperCase())).size === variables.length,
-+					"Environment variable names must be unique",
-+				),
-+		})
-+		.optional(),
-+});
-+
-+export type TaskOverrides = z.infer<typeof taskOverridesSchema>;
-+
-+export function cloneTaskOverrides(value: TaskOverrides | undefined): TaskOverrides | undefined {
-+	return value === undefined ? undefined : taskOverridesSchema.parse(value);
-+}
-+
-+export function getTaskOverridesError(value: TaskOverrides | undefined): string | null {
-+	if (value === undefined) return null;
-+	const result = taskOverridesSchema.safeParse(value);
-+	return result.success ? null : (result.error.issues[0]?.message ?? "Invalid task settings");
-+}
 diff --git a/src/terminal/agent-registry.ts b/src/terminal/agent-registry.ts
 index 4775a128b6e1c909a270a07a38920a735a5ac6f1..1f5533c7d68410c304e3fc8f98bdcac0b832d02b 100644
 --- a/src/terminal/agent-registry.ts
@@ -797,65 +360,6 @@ index b196c72550ce54d93cdc5cb8f030382755428a76..7a331009f377e6c7851dc5bae75a429e
  		});
  		if (entry.active) {
  			for (const listener of entry.listeners.values()) {
-diff --git a/src/terminal/task-launch-overrides.ts b/src/terminal/task-launch-overrides.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..1cd9b1ccc28205b5c1153e74b02cc6a7b1e4dd74
---- /dev/null
-+++ b/src/terminal/task-launch-overrides.ts
-@@ -0,0 +1,53 @@
-+import type { RuntimeAgentId } from "../core/api-contract";
-+import type { StoredLaunchProfile } from "../core/launch-profiles";
-+import { type TaskOverrides, taskOverridesSchema } from "../core/task-overrides";
-+
-+/** Keep launch overrides in argv/env; never interpolate them into shell commands. */
-+export function resolveTaskLaunchOverrides(
-+	agentId: RuntimeAgentId,
-+	args: string[],
-+	overrides?: TaskOverrides,
-+	profile?: StoredLaunchProfile | null,
-+) {
-+	const settings = overrides === undefined ? undefined : taskOverridesSchema.parse(overrides);
-+	if (agentId === "cline") {
-+		return { args: [...args], env: undefined, modelId: null };
-+	}
-+	const cliModel = settings?.cliModel?.trim();
-+	const supportsModel = agentId === "codex" || agentId === "claude";
-+	const nextArgs: string[] = [];
-+	const configuredArgs = [...(profile?.cliArgs ?? []), ...(settings?.cliArgs ?? []), ...args];
-+	for (let index = 0; index < configuredArgs.length; index++) {
-+		const arg = configuredArgs[index];
-+		if (supportsModel && cliModel) {
-+			if (arg === "--model" || arg === "-m") {
-+				index++;
-+				continue;
-+			}
-+			if (arg.startsWith("--model=") || arg.startsWith("-m=")) continue;
-+		}
-+		nextArgs.push(arg);
-+	}
-+	if (supportsModel && cliModel) nextArgs.unshift("--model", cliModel);
-+	const profileEnvironment = profile
-+		? Object.fromEntries(profile.variables.map(({ name, value }) => [name, value]))
-+		: {};
-+	const taskEnvironment = settings?.environment?.enabled
-+		? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
-+		: {};
-+	const environment =
-+		Object.keys(profileEnvironment).length > 0 || Object.keys(taskEnvironment).length > 0
-+			? { ...profileEnvironment, ...taskEnvironment }
-+			: undefined;
-+	let modelId: string | null = null;
-+	if (supportsModel) {
-+		for (let index = 0; index < nextArgs.length; index++) {
-+			const arg = nextArgs[index];
-+			if (arg === "--model" || arg === "-m") modelId = nextArgs[++index] ?? null;
-+			else if (arg.startsWith("--model=") || arg.startsWith("-m=")) modelId = arg.slice(arg.indexOf("=") + 1);
-+		}
-+		if (!modelId && agentId === "claude")
-+			modelId = environment?.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? null;
-+	}
-+	return { args: nextArgs, env: environment, modelId };
-+}
 diff --git a/src/trpc/runtime-api.ts b/src/trpc/runtime-api.ts
 index a494c86b97617d4c1f0f6c19b46de1c229262c1e..f6dc1e42a7adb6313b089038c3e6b9f649d32f69 100644
 --- a/src/trpc/runtime-api.ts
@@ -944,47 +448,6 @@ index a494c86b97617d4c1f0f6c19b46de1c229262c1e..f6dc1e42a7adb6313b089038c3e6b9f6
  					autonomousModeEnabled: scopedRuntimeConfig.agentAutonomousModeEnabled,
  					cwd: taskCwd,
  					prompt: body.prompt,
-diff --git a/test/runtime/hooks-claude-model.test.ts b/test/runtime/hooks-claude-model.test.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..4e4b6eda1cb3f7ffc37f165089a4c8f3ae1badf3
---- /dev/null
-+++ b/test/runtime/hooks-claude-model.test.ts
-@@ -0,0 +1,35 @@
-+import { mkdtemp, rm, writeFile } from "node:fs/promises";
-+import { tmpdir } from "node:os";
-+import { join } from "node:path";
-+import { describe, expect, it } from "vitest";
-+import { enrichClaudeModelMetadata, resolveClaudeTranscriptModel } from "../../src/commands/hook-events/claude-model";
-+
-+describe("Claude model reporting", () => {
-+	it("finds the latest main-session model across model changes and incomplete transcript lines", () => {
-+		const lines = [
-+			JSON.stringify({ type: "assistant", message: { model: "first-model" } }),
-+			JSON.stringify({ type: "assistant", message: { model: "second-model" } }),
-+			JSON.stringify({ type: "assistant", isSidechain: true, message: { model: "subagent-model" } }),
-+			JSON.stringify({ type: "assistant", message: { model: "<synthetic>" } }),
-+			'{"incomplete":',
-+		];
-+		expect(resolveClaudeTranscriptModel(lines.join("\n"))).toBe("second-model");
-+		expect(resolveClaudeTranscriptModel("unrelated output")).toBeNull();
-+	});
-+
-+	it("enriches hook metadata from the transcript and tolerates missing transcripts", async () => {
-+		const dir = await mkdtemp(join(tmpdir(), "kanban-claude-model-"));
-+		try {
-+			const path = join(dir, "session.jsonl");
-+			const args = { payload: { transcript_path: path }, metadata: { source: "claude", activityText: "Working" } };
-+			expect(await enrichClaudeModelMetadata(args)).toEqual(args);
-+			await writeFile(path, JSON.stringify({ type: "assistant", message: { model: "reported-model" } }));
-+			expect(await enrichClaudeModelMetadata(args)).toEqual({
-+				...args,
-+				metadata: { ...args.metadata, modelId: "reported-model" },
-+			});
-+		} finally {
-+			await rm(dir, { recursive: true, force: true });
-+		}
-+	});
-+});
 diff --git a/test/runtime/hooks-codex-watcher.test.ts b/test/runtime/hooks-codex-watcher.test.ts
 index 8def0aa2d1d53dfb602ae1aa7f969ae9c7628f8b..a69cc0129629bb80a6df0e2ae4a6eacce6634b2f 100644
 --- a/test/runtime/hooks-codex-watcher.test.ts
@@ -1041,170 +504,6 @@ index 8def0aa2d1d53dfb602ae1aa7f969ae9c7628f8b..a69cc0129629bb80a6df0e2ae4a6eacc
  	it("emits in-progress activity from rollout events when tui logs are low-signal", async () => {
  		const tempDir = await mkdtemp(join(tmpdir(), "kanban-codex-watcher-"));
  		const logPath = join(tempDir, "session.jsonl");
-diff --git a/test/runtime/launch-profiles.test.ts b/test/runtime/launch-profiles.test.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..d8f6375b964d9715cbb27bc836ac061e7fa4b6b6
---- /dev/null
-+++ b/test/runtime/launch-profiles.test.ts
-@@ -0,0 +1,29 @@
-+import { randomBytes } from "node:crypto";
-+import { describe, expect, it } from "vitest";
-+import { decryptLaunchProfiles, encryptLaunchProfiles } from "../../src/config/launch-profiles";
-+import type { StoredLaunchProfile } from "../../src/core/launch-profiles";
-+
-+describe("launch profile encryption", () => {
-+	const profiles: StoredLaunchProfile[] = [
-+		{
-+			id: "openai-work",
-+			name: "OpenAI work",
-+			agentId: "codex",
-+			cliArgs: ["-c", "model_context_window=100000"],
-+			variables: [{ name: "OPENAI_API_KEY", value: "secret-value" }],
-+		},
-+	];
-+
-+	it("round trips profiles without putting secrets in the envelope plaintext", () => {
-+		const key = randomBytes(32);
-+		const envelope = encryptLaunchProfiles(profiles, key);
-+		expect(JSON.stringify(envelope)).not.toContain("secret-value");
-+		expect(() => decryptLaunchProfiles(envelope, randomBytes(32))).toThrow();
-+	});
-+
-+	it("decrypts with the original key", () => {
-+		const key = randomBytes(32);
-+		const envelope = encryptLaunchProfiles(profiles, key);
-+		expect(decryptLaunchProfiles(envelope, key)).toEqual(profiles);
-+	});
-+});
-diff --git a/test/runtime/task-overrides.test.ts b/test/runtime/task-overrides.test.ts
-new file mode 100644
-index 0000000000000000000000000000000000000000..70e1026777a9d52fed0985aa5458de247ca45dad
---- /dev/null
-+++ b/test/runtime/task-overrides.test.ts
-@@ -0,0 +1,123 @@
-+import { describe, expect, it } from "vitest";
-+import { runtimeBoardCardSchema, runtimeTaskSessionStartRequestSchema } from "../../src/core/api-contract";
-+import type { StoredLaunchProfile } from "../../src/core/launch-profiles";
-+import { addTaskToColumn, updateTask } from "../../src/core/task-board-mutations";
-+import { taskOverridesSchema } from "../../src/core/task-overrides";
-+import { resolveTaskLaunchOverrides } from "../../src/terminal/task-launch-overrides";
-+
-+describe("task overrides", () => {
-+	const settings = {
-+		labels: ["backend"],
-+		cliModel: "custom-model",
-+		environment: { enabled: true, variables: [{ name: "API_TOKEN", value: "spaces $literal `text`=value" }] },
-+	};
-+
-+	it("persists a titled empty task through API validation and updates without substituting a prompt", () => {
-+		const created = addTaskToColumn(
-+			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },
-+			"backlog",
-+			{ title: "New task", prompt: "", agentId: "codex", baseRef: "main", taskOverrides: settings },
-+			() => "task-1",
-+		);
-+		const restored = runtimeBoardCardSchema.parse(JSON.parse(JSON.stringify(created.task)));
-+		expect(restored).toMatchObject({ title: "New task", prompt: "", taskOverrides: settings });
-+		const updated = updateTask(created.board, created.task.id, {
-+			title: "Configure model",
-+			prompt: "",
-+			baseRef: "main",
-+		});
-+		expect(updated.updated).toBe(true);
-+		expect(updated.task).toMatchObject({ title: "Configure model", prompt: "", taskOverrides: settings });
-+	});
-+
-+	it("persists overrides across API validation and unrelated task edits without sharing mutable state", () => {
-+		const created = addTaskToColumn(
-+			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },
-+			"backlog",
-+			{ prompt: "Implement", baseRef: "main", taskOverrides: settings },
-+			() => "task-1",
-+		);
-+		const restored = runtimeBoardCardSchema.parse(JSON.parse(JSON.stringify(created.task)));
-+		expect(restored.taskOverrides).toEqual(settings);
-+		expect(created.task.taskOverrides?.environment).not.toBe(settings.environment);
-+		const edited = updateTask(created.board, created.task.id, {
-+			title: "Renamed",
-+			prompt: "Implement",
-+			baseRef: "main",
-+		});
-+		expect(edited.task?.taskOverrides).toEqual(settings);
-+		const start = runtimeTaskSessionStartRequestSchema.parse({
-+			taskId: created.task.id,
-+			prompt: "Implement",
-+			baseRef: "main",
-+			taskOverrides: restored.taskOverrides,
-+		});
-+		expect(resolveTaskLaunchOverrides("codex", ["--model=old", "--profile", "work"], start.taskOverrides)).toEqual({
-+			args: ["--model", "custom-model", "--profile", "work"],
-+			env: { API_TOKEN: "spaces $literal `text`=value" },
-+			modelId: "custom-model",
-+		});
-+	});
-+
-+	it.each(["codex", "claude"] as const)(
-+		"passes enabled env literally to %s and does not mutate parent env or args",
-+		(agentId) => {
-+			const original = process.env.API_TOKEN;
-+			const args = ["-m", "old", "--verbose"];
-+			const launch = resolveTaskLaunchOverrides(agentId, args, settings);
-+			expect(launch.env?.API_TOKEN).toBe(settings.environment.variables[0].value);
-+			expect(args).toEqual(["-m", "old", "--verbose"]);
-+			expect(process.env.API_TOKEN).toBe(original);
-+			expect(
-+				resolveTaskLaunchOverrides(agentId, [], {
-+					...settings,
-+					environment: { ...settings.environment, enabled: false },
-+				}).env,
-+			).toBeUndefined();
-+			expect(resolveTaskLaunchOverrides(agentId, []).env).toBeUndefined();
-+		},
-+	);
-+
-+	it("combines saved profile args and secrets before task-level overrides", () => {
-+		const profile: StoredLaunchProfile = {
-+			id: "profile-1",
-+			name: "OpenAI work",
-+			agentId: "codex",
-+			cliArgs: ["-c", "profile_setting=true"],
-+			variables: [{ name: "OPENAI_API_KEY", value: "profile-key" }],
-+		};
-+		expect(
-+			resolveTaskLaunchOverrides(
-+				"codex",
-+				["--model", "default"],
-+				{
-+					cliArgs: ["-c", "task_setting=true"],
-+					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
-+				},
-+				profile,
-+			),
-+		).toEqual({
-+			args: ["-c", "profile_setting=true", "-c", "task_setting=true", "--model", "default"],
-+			env: { OPENAI_API_KEY: "task-key" },
-+			modelId: "default",
-+		});
-+	});
-+
-+	it("does not apply CLI settings to the native Cline SDK", () => {
-+		expect(resolveTaskLaunchOverrides("cline", [], settings)).toEqual({ args: [], env: undefined, modelId: null });
-+	});
-+
-+	it.each([
-+		{ variables: [{ name: "BAD=NAME", value: "x" }] },
-+		{ variables: [{ name: "KANBAN_TASK_ID", value: "other-task" }] },
-+		{ variables: [{ name: "TOKEN", value: "x\0y" }] },
-+		{
-+			variables: [
-+				{ name: "TOKEN", value: "one" },
-+				{ name: "TOKEN", value: "two" },
-+			],
-+		},
-+	])("rejects invalid or ambiguous environment variables", ({ variables }) => {
-+		expect(taskOverridesSchema.safeParse({ environment: { enabled: true, variables } }).success).toBe(false);
-+	});
-+});
 diff --git a/test/runtime/terminal/agent-session-adapters.test.ts b/test/runtime/terminal/agent-session-adapters.test.ts
 index 9178deed6d3818bb272dd5a01fe329894e220eef..6b3751490b2bf29a3abeaaf7fa7015081aff8211 100644
 --- a/test/runtime/terminal/agent-session-adapters.test.ts
@@ -1333,10 +632,36 @@ index 3220ea46ce7fceff83bf067de35b12adf06583ae..5db815d3549a3e7f5f0167b9815cba34
  		const manager = new TerminalSessionManager();
  		manager.hydrateFromRecord({
 diff --git a/test/runtime/trpc/runtime-api.test.ts b/test/runtime/trpc/runtime-api.test.ts
-index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..a09182ec1a744e76be5126fd611d0e051a08c8df 100644
+index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..39ba878f1af201fd3318aaee659bef7289066f25 100644
 --- a/test/runtime/trpc/runtime-api.test.ts
 +++ b/test/runtime/trpc/runtime-api.test.ts
-@@ -413,6 +413,89 @@ describe("createRuntimeApi startTaskSession", () => {
+@@ -4,6 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ import type { RuntimeConfigState } from "../../../src/config/runtime-config";
+ import type { RuntimeTaskSessionSummary } from "../../../src/core/api-contract";
++import type { StoredLaunchProfile } from "../../../src/core/launch-profiles";
++
++const launchProfileMocks = vi.hoisted(() => ({
++	resolveLaunchProfile: vi.fn<(id: string | undefined) => Promise<StoredLaunchProfile | null>>(),
++}));
++
++vi.mock("../../../src/config/launch-profiles", () => ({
++	resolveLaunchProfile: launchProfileMocks.resolveLaunchProfile,
++	loadLaunchProfileSummaries: vi.fn(async () => []),
++	saveLaunchProfiles: vi.fn(async () => []),
++}));
+ 
+ const agentRegistryMocks = vi.hoisted(() => ({
+ 	resolveAgentCommand: vi.fn(),
+@@ -256,6 +267,7 @@ describe("createRuntimeApi startTaskSession", () => {
+ 	let mcpOauthSettingsPath = "";
+ 
+ 	beforeEach(() => {
++		launchProfileMocks.resolveLaunchProfile.mockReset().mockResolvedValue(null);
+ 		mcpSettingsPath = `/tmp/kanban-mcp-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+ 		mcpOauthSettingsPath = `/tmp/kanban-mcp-oauth-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
+ 		process.env.CLINE_MCP_SETTINGS_PATH = mcpSettingsPath;
+@@ -413,6 +425,137 @@ describe("createRuntimeApi startTaskSession", () => {
  		rmSync(`${mcpOauthSettingsPath}.lock`, { force: true });
  	});
  
@@ -1373,6 +698,54 @@ index 59ebd7395996fe7fbc7686831eb8b6825c9f2561..a09182ec1a744e76be5126fd611d0e05
 +			}),
 +		);
 +	});
++
++	it.each(["", "Hello"])(
++		"applies encrypted CLIProxy profiles when starting a Codex task (prompt: %j)",
++		async (prompt) => {
++			launchProfileMocks.resolveLaunchProfile.mockResolvedValue({
++				id: "work",
++				name: "Work proxy",
++				agentId: "codex",
++				cliArgs: [],
++				codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
++				variables: [{ name: "OPENAI_API_KEY", value: "stored-proxy-key" }],
++			});
++			agentRegistryMocks.resolveAgentCommand.mockReturnValue({ agentId: "codex", binary: "codex", args: [] });
++			taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/proxy-worktree");
++			const terminalManager = { startTaskSession: vi.fn(async () => createSummary()), applyTurnCheckpoint: vi.fn() };
++			const api = createTestRuntimeApi({
++				getActiveWorkspaceId: vi.fn(() => "workspace-1"),
++				loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
++				setActiveRuntimeConfig: vi.fn(),
++				getScopedTerminalManager: vi.fn(async () => terminalManager as never),
++				getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
++				resolveInteractiveShellCommand: vi.fn(),
++				runCommand: vi.fn(),
++			});
++			const result = await api.startTaskSession(
++				{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
++				{
++					taskId: "task-proxy",
++					agentId: "codex",
++					prompt,
++					baseRef: "main",
++					taskOverrides: { launchProfileId: "work" },
++				},
++			);
++			expect(result.ok).toBe(true);
++			expect(launchProfileMocks.resolveLaunchProfile).toHaveBeenCalledWith("work");
++			expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
++				expect.objectContaining({
++					prompt,
++					env: { OPENAI_API_KEY: "stored-proxy-key" },
++					args: expect.arrayContaining([
++						'model_provider="cliproxy"',
++						"model_providers.cliproxy.requires_openai_auth=false",
++					]),
++				}),
++			);
++		},
++	);
 +
 +	it("starts an empty CLI task in its worktree using the task-session API", async () => {
 +		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
@@ -2001,11 +1374,222 @@ index 2aec21148d151006e817f8e0d0d41909a171400d..1da4500170f031967620bd71126568b5
  						defaultClineModelId={defaultClineModelId}
  						onCardClick={(card) => {
  							if (!dragOccurredRef.current) {
+diff --git a/web-ui/src/components/runtime-settings-dialog.test.tsx b/web-ui/src/components/runtime-settings-dialog.test.tsx
+index 9b9d6b4712a04e100b02502c31b958cfb925c659..6e0fa7304fa7099cd10f4c96bf35b898b8702f9e 100644
+--- a/web-ui/src/components/runtime-settings-dialog.test.tsx
++++ b/web-ui/src/components/runtime-settings-dialog.test.tsx
+@@ -75,6 +75,7 @@ vi.mock("@radix-ui/react-select", () => ({
+ }));
+ 
+ const resetLayoutCustomizationsMock = vi.hoisted(() => vi.fn());
++const saveRuntimeConfigMock = vi.hoisted(() => vi.fn(async () => true));
+ const clineSetupSectionOnSavedRef = vi.hoisted(() => ({
+ 	onSaved: null as null | (() => void),
+ }));
+@@ -142,7 +143,7 @@ vi.mock("@/runtime/use-runtime-config", () => ({
+ 		isLoading: false,
+ 		isSaving: false,
+ 		refresh: vi.fn(),
+-		save: vi.fn(async () => true),
++		save: saveRuntimeConfigMock,
+ 	}),
+ }));
+ 
+@@ -217,6 +218,7 @@ describe("RuntimeSettingsDialog", () => {
+ 
+ 	beforeEach(() => {
+ 		resetLayoutCustomizationsMock.mockReset();
++		saveRuntimeConfigMock.mockClear();
+ 		clineSetupSectionOnSavedRef.onSaved = null;
+ 		window.localStorage.clear();
+ 		document.documentElement.removeAttribute("data-theme");
+@@ -244,6 +246,173 @@ describe("RuntimeSettingsDialog", () => {
+ 		}
+ 	});
+ 
++	it("adds CLIProxy routing to a saved profile while preserving its encrypted key", async () => {
++		await act(async () => {
++			root.render(
++				<RuntimeSettingsDialog
++					open
++					workspaceId="workspace-1"
++					onOpenChange={() => {}}
++					initialConfig={{
++						...savedClineOauthConfig,
++						launchProfiles: [
++							{
++								id: "work",
++								name: "Work proxy",
++								agentId: "codex",
++								cliArgs: [],
++								variables: [{ name: "OPENAI_API_KEY", configured: true }],
++							},
++						],
++					}}
++				/>,
++			);
++		});
++		const providerLabel = Array.from(document.querySelectorAll("label")).find(
++			(label) => label.textContent === "Codex provider",
++		);
++		const providerSelect = document.getElementById(providerLabel?.htmlFor ?? "") as HTMLSelectElement;
++		expect(providerSelect.value).toBe("default");
++		await act(async () => {
++			providerSelect.value = "custom";
++			providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
++		});
++		await act(async () => {
++			findButtonByText(document.body, "Save")?.click();
++		});
++		expect(saveRuntimeConfigMock).not.toHaveBeenCalled();
++		expect(document.body.textContent).toContain("Enter an HTTP(S) API base URL");
++		const urlLabel = Array.from(document.querySelectorAll("label")).find(
++			(label) => label.textContent === "API base URL",
++		);
++		const urlInput = document.getElementById(urlLabel?.htmlFor ?? "") as HTMLInputElement;
++		await act(async () => {
++			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
++				urlInput,
++				"http://127.0.0.1:8317/v1",
++			);
++			urlInput.dispatchEvent(new Event("input", { bubbles: true }));
++		});
++		await act(async () => {
++			findButtonByText(document.body, "Save")?.click();
++		});
++		expect(saveRuntimeConfigMock).toHaveBeenCalledWith(
++			expect.objectContaining({
++				launchProfiles: [
++					{
++						id: "work",
++						name: "Work proxy",
++						agentId: "codex",
++						cliArgs: [],
++						codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
++						variables: [{ name: "OPENAI_API_KEY", value: undefined }],
++					},
++				],
++			}),
++		);
++	});
++
++	it("loads saved provider routing and lets the user switch back to local Codex settings", async () => {
++		await act(async () => {
++			root.render(
++				<RuntimeSettingsDialog
++					open
++					workspaceId="workspace-1"
++					onOpenChange={() => {}}
++					initialConfig={{
++						...savedClineOauthConfig,
++						launchProfiles: [
++							{
++								id: "work",
++								name: "Work proxy",
++								agentId: "codex",
++								cliArgs: [],
++								variables: [],
++								codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "PROXY_KEY" },
++							},
++						],
++					}}
++				/>,
++			);
++		});
++		const providerLabel = Array.from(document.querySelectorAll("label")).find(
++			(label) => label.textContent === "Codex provider",
++		);
++		const providerSelect = document.getElementById(providerLabel?.htmlFor ?? "") as HTMLSelectElement;
++		expect(providerSelect.value).toBe("custom");
++		expect(document.querySelector<HTMLInputElement>('input[placeholder="OPENAI_API_KEY"]')?.value).toBe("PROXY_KEY");
++		await act(async () => {
++			providerSelect.value = "default";
++			providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
++		});
++		await act(async () => {
++			findButtonByText(document.body, "Save")?.click();
++		});
++		expect(saveRuntimeConfigMock).toHaveBeenCalledWith(
++			expect.objectContaining({
++				launchProfiles: [expect.objectContaining({ id: "work", codexProvider: undefined })],
++			}),
++		);
++	});
++
++	it("saves pasted command arguments and rejects unfinished quotes without losing the saved key", async () => {
++		await act(async () => {
++			root.render(
++				<RuntimeSettingsDialog
++					open
++					workspaceId="workspace-1"
++					onOpenChange={() => {}}
++					initialConfig={{
++						...savedClineOauthConfig,
++						launchProfiles: [
++							{
++								id: "work",
++								name: "Work",
++								agentId: "codex",
++								cliArgs: ["-c", 'model_provider="cliproxy"'],
++								variables: [{ name: "OPENAI_API_KEY", configured: true }],
++							},
++						],
++					}}
++				/>,
++			);
++		});
++		const select = document.querySelector<HTMLSelectElement>('[aria-label="CLI arguments format"]');
++		if (!select) throw new Error("Missing argument format selector");
++		await act(async () => {
++			select.value = "command";
++			select.dispatchEvent(new Event("change", { bubbles: true }));
++		});
++		const label = Array.from(document.querySelectorAll("label")).find((item) => item.textContent === "CLI arguments");
++		const textarea = document.getElementById(label?.htmlFor ?? "") as HTMLTextAreaElement;
++		const setText = (text: string) => {
++			Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, text);
++			textarea.dispatchEvent(new Event("input", { bubbles: true }));
++		};
++		await act(async () => setText("-c 'model_provider="));
++		await act(async () => {
++			findButtonByText(document.body, "Save")?.click();
++		});
++		expect(saveRuntimeConfigMock).not.toHaveBeenCalled();
++		const text = `-c 'model_provider="cliproxy"' -c model_context_window=272000`;
++		await act(async () => setText(text));
++		await act(async () => {
++			findButtonByText(document.body, "Save")?.click();
++		});
++		expect(saveRuntimeConfigMock).toHaveBeenCalledWith(
++			expect.objectContaining({
++				launchProfiles: [
++					expect.objectContaining({
++						id: "work",
++						cliArgs: [],
++						cliArgsInput: { mode: "command", text },
++						variables: [{ name: "OPENAI_API_KEY", value: undefined }],
++					}),
++				],
++			}),
++		);
++	});
++
+ 	it("does not render support actions inside settings", async () => {
+ 		await act(async () => {
+ 			root.render(
 diff --git a/web-ui/src/components/runtime-settings-dialog.tsx b/web-ui/src/components/runtime-settings-dialog.tsx
-index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f656dbbb9 100644
+index 314e80c68227b11ba1ea62903acfc94b6110c06f..36a23fa26b2478f3748b554742024ddfc28fb751 100644
 --- a/web-ui/src/components/runtime-settings-dialog.tsx
 +++ b/web-ui/src/components/runtime-settings-dialog.tsx
-@@ -17,6 +17,7 @@ import {
+@@ -6,6 +6,7 @@ import * as RadixPopover from "@radix-ui/react-popover";
+ import * as RadixSelect from "@radix-ui/react-select";
+ import * as RadixSwitch from "@radix-ui/react-switch";
+ import { getRuntimeAgentCatalogEntry, getRuntimeLaunchSupportedAgentCatalog } from "@runtime-agent-catalog";
++import { launchProfileSaveSchema } from "@runtime-launch-profiles";
+ import { areRuntimeProjectShortcutsEqual } from "@runtime-shortcuts";
+ import {
+ 	Bell,
+@@ -17,6 +18,7 @@ import {
  	ExternalLink,
  	FolderOpen,
  	GitCommit,
@@ -2013,7 +1597,16 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  	Palette,
  	Plus,
  	Settings,
-@@ -44,6 +45,7 @@ import { previewThemeId, readStoredThemeId, saveThemeId, THEME_GROUPS, THEMES, t
+@@ -24,6 +26,8 @@ import {
+ 	X,
+ } from "lucide-react";
+ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
++import { CliArgumentsEditor } from "@/components/cli-arguments-editor";
++import { CodexLaunchProviderEditor } from "@/components/codex-launch-provider-editor";
+ import { AccountOrganizationSection } from "@/components/shared/account-organization-section";
+ import { ClineSetupSection } from "@/components/shared/cline-setup-section";
+ import {
+@@ -44,6 +48,7 @@ import { previewThemeId, readStoredThemeId, saveThemeId, THEME_GROUPS, THEMES, t
  import { useLayoutCustomizations } from "@/resize/layout-customizations";
  import { openFileOnHost } from "@/runtime/runtime-config-query";
  import type {
@@ -2021,7 +1614,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  	RuntimeAgentId,
  	RuntimeClineMcpServerAuthStatus,
  	RuntimeConfigResponse,
-@@ -90,11 +92,44 @@ const GIT_PROMPT_VARIANT_OPTIONS: Array<{ value: TaskGitAction; label: string }>
+@@ -90,11 +95,48 @@ const GIT_PROMPT_VARIANT_OPTIONS: Array<{ value: TaskGitAction; label: string }>
  	{ value: "pr", label: "Make PR" },
  ];
  
@@ -2031,6 +1624,8 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
 +		name: profile.name,
 +		agentId: profile.agentId,
 +		cliArgs: [...profile.cliArgs],
++		cliArgsInput: profile.cliArgsInput ? { ...profile.cliArgsInput } : undefined,
++		codexProvider: profile.codexProvider ? { ...profile.codexProvider } : undefined,
 +		variables: profile.variables.map((variable) => ({
 +			name: variable.name,
 +			value: "",
@@ -2053,6 +1648,8 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
 +	name: string;
 +	agentId: RuntimeAgentId | null;
 +	cliArgs: string[];
++	cliArgsInput?: LaunchProfileSummary["cliArgsInput"];
++	codexProvider?: LaunchProfileSummary["codexProvider"];
 +	variables: Array<{ name: string; value: string; configured: boolean }>;
 +};
 +
@@ -2067,7 +1664,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  
  const SETTINGS_NAV_ITEMS: ReadonlyArray<{
  	id: SettingsNavId;
-@@ -103,6 +138,7 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
+@@ -103,6 +145,7 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
  	clineOnly?: boolean;
  }> = [
  	{ id: "general", label: "General", icon: <SlidersHorizontal size={16} /> },
@@ -2075,7 +1672,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  	{ id: "cline", label: "Cline", icon: <Bot size={16} />, clineOnly: true },
  	{ id: "git-prompts", label: "Git Prompts", icon: <GitCommit size={16} /> },
  	{ id: "notifications", label: "Notifications", icon: <Bell size={16} /> },
-@@ -373,6 +409,7 @@ export function RuntimeSettingsDialog({
+@@ -373,6 +416,7 @@ export function RuntimeSettingsDialog({
  	const [draftThemeId, setDraftThemeId] = useState<ThemeId>(readStoredThemeId);
  	const [notificationPermission, setNotificationPermission] = useState<BrowserNotificationPermission>("unsupported");
  	const [shortcuts, setShortcuts] = useState<RuntimeProjectShortcut[]>([]);
@@ -2083,7 +1680,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  	const [commitPromptTemplate, setCommitPromptTemplate] = useState("");
  	const [openPrPromptTemplate, setOpenPrPromptTemplate] = useState("");
  	const [selectedPromptVariant, setSelectedPromptVariant] = useState<TaskGitAction>("commit");
-@@ -443,6 +480,10 @@ export function RuntimeSettingsDialog({
+@@ -443,6 +487,10 @@ export function RuntimeSettingsDialog({
  	const initialAgentAutonomousModeEnabled = config?.agentAutonomousModeEnabled ?? true;
  	const initialReadyForReviewNotificationsEnabled = config?.readyForReviewNotificationsEnabled ?? true;
  	const initialShortcuts = config?.shortcuts ?? [];
@@ -2094,7 +1691,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  	const initialCommitPromptTemplate = config?.commitPromptTemplate ?? "";
  	const initialOpenPrPromptTemplate = config?.openPrPromptTemplate ?? "";
  	const clineSettings = useRuntimeSettingsClineController({
-@@ -482,6 +523,9 @@ export function RuntimeSettingsDialog({
+@@ -482,6 +530,9 @@ export function RuntimeSettingsDialog({
  		if (!areRuntimeProjectShortcutsEqual(shortcuts, initialShortcuts)) {
  			return true;
  		}
@@ -2104,7 +1701,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  		if (
  			normalizeTemplateForComparison(commitPromptTemplate) !==
  			normalizeTemplateForComparison(initialCommitPromptTemplate)
-@@ -505,11 +549,13 @@ export function RuntimeSettingsDialog({
+@@ -505,11 +556,13 @@ export function RuntimeSettingsDialog({
  		initialReadyForReviewNotificationsEnabled,
  		initialSelectedAgentId,
  		initialShortcuts,
@@ -2118,7 +1715,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  	]);
  
  	useEffect(() => {
-@@ -520,6 +566,7 @@ export function RuntimeSettingsDialog({
+@@ -520,6 +573,7 @@ export function RuntimeSettingsDialog({
  		setAgentAutonomousModeEnabled(config?.agentAutonomousModeEnabled ?? true);
  		setReadyForReviewNotificationsEnabled(config?.readyForReviewNotificationsEnabled ?? true);
  		setShortcuts(config?.shortcuts ?? []);
@@ -2126,7 +1723,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  		setCommitPromptTemplate(config?.commitPromptTemplate ?? "");
  		setOpenPrPromptTemplate(config?.openPrPromptTemplate ?? "");
  		setSaveError(null);
-@@ -530,6 +577,7 @@ export function RuntimeSettingsDialog({
+@@ -530,6 +584,7 @@ export function RuntimeSettingsDialog({
  		config?.readyForReviewNotificationsEnabled,
  		config?.selectedAgentId,
  		config?.shortcuts,
@@ -2134,7 +1731,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  		fallbackAgentId,
  		open,
  	]);
-@@ -697,6 +745,22 @@ export function RuntimeSettingsDialog({
+@@ -697,6 +752,29 @@ export function RuntimeSettingsDialog({
  				return;
  			}
  		}
@@ -2147,6 +1744,8 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
 +			name: profile.name.trim(),
 +			agentId: profile.agentId,
 +			cliArgs: profile.cliArgs,
++			cliArgsInput: profile.cliArgsInput,
++			codexProvider: profile.codexProvider,
 +			variables: profile.variables
 +				.filter((variable) => variable.name.trim().length > 0)
 +				.map((variable) => ({
@@ -2154,18 +1753,23 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
 +					value: variable.configured && variable.value.length === 0 ? undefined : variable.value,
 +				})),
 +		}));
++		const validatedProfiles = launchProfileSaveSchema.array().max(50).safeParse(launchProfilePayload);
++		if (!validatedProfiles.success) {
++			setSaveError(validatedProfiles.error.issues[0]?.message ?? "Check your launch profile settings.");
++			return;
++		}
  		const saved = await save({
  			selectedAgentId,
  			agentAutonomousModeEnabled,
-@@ -704,6 +768,7 @@ export function RuntimeSettingsDialog({
+@@ -704,6 +782,7 @@ export function RuntimeSettingsDialog({
  			shortcuts,
  			commitPromptTemplate,
  			openPrPromptTemplate,
-+			launchProfiles: launchProfilePayload,
++			launchProfiles: validatedProfiles.data,
  		});
  		if (!saved) {
  			setSaveError("Could not save runtime settings. Check runtime logs and try again.");
-@@ -756,6 +821,29 @@ export function RuntimeSettingsDialog({
+@@ -756,6 +835,29 @@ export function RuntimeSettingsDialog({
  	);
  
  	const currentThemeDef = THEMES.find((t) => t.id === draftThemeId);
@@ -2195,7 +1799,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
  
  	return (
  		<Dialog open={open} onOpenChange={handleDialogOpenChange} contentClassName="!max-w-[780px]">
-@@ -814,6 +902,160 @@ export function RuntimeSettingsDialog({
+@@ -814,6 +916,162 @@ export function RuntimeSettingsDialog({
  						</p>
  					</div>
  
@@ -2210,7 +1814,7 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
 +					<div className="rounded-lg border border-border bg-surface-0 px-4 py-3 mb-4">
 +						<p className="text-text-secondary text-[13px] mt-0 mb-3">
 +							Save encrypted environment variables and CLI arguments, then select a profile when starting a task.
-+							Values are never returned to the browser after they are saved.
++							Environment variable values are never returned to the browser after they are saved.
 +						</p>
 +						<div className="flex justify-end mb-2">
 +							<Button
@@ -2268,16 +1872,18 @@ index 314e80c68227b11ba1ea62903acfc94b6110c06f..e1aac8f026f87b0c24cd356f98662c2f
 +											}
 +										/>
 +									</div>
-+									<textarea
-+										value={profile.cliArgs.join("\n")}
-+										rows={2}
-+										placeholder={"CLI arguments, one per line, e.g.\n-c\nmodel_context_window=100000"}
-+										onChange={(event) =>
-+											updateLaunchProfile(profileIndex, {
-+												cliArgs: event.target.value.split("\n").filter((arg) => arg.length > 0),
-+											})
++									{profile.agentId === null || profile.agentId === "codex" ? (
++										<CodexLaunchProviderEditor
++											value={profile.codexProvider}
++											onChange={(codexProvider) => updateLaunchProfile(profileIndex, { codexProvider })}
++										/>
++									) : null}
++									<CliArgumentsEditor
++										input={profile.cliArgsInput}
++										args={profile.cliArgs}
++										onChange={(cliArgsInput) =>
++											updateLaunchProfile(profileIndex, { cliArgs: [], cliArgsInput })
 +										}
-+										className="w-full resize-y rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
 +									/>
 +									<div className="space-y-1">
 +										{profile.variables.map((variable, variableIndex) => (
@@ -2614,268 +2220,6 @@ index b6ad756b44c1211db9b756434dcf19fdd20e3f2a..a5aa78e327fed3bb8198c28f5ede91a1
  						>
  							<span className="inline-flex items-center">
  								<span>Start</span>
-diff --git a/web-ui/src/components/task-labels-editor.tsx b/web-ui/src/components/task-labels-editor.tsx
-new file mode 100644
-index 0000000000000000000000000000000000000000..a697f094deb92047862650df403ded3bd2379607
---- /dev/null
-+++ b/web-ui/src/components/task-labels-editor.tsx
-@@ -0,0 +1,68 @@
-+import { Plus, X } from "lucide-react";
-+import { useId, useState } from "react";
-+import { Button } from "@/components/ui/button";
-+
-+export function TaskLabelsEditor({
-+	labels = [],
-+	onChange,
-+}: {
-+	labels?: string[];
-+	onChange: (labels: string[]) => void;
-+}) {
-+	const id = useId();
-+	const [draft, setDraft] = useState("");
-+	const addLabel = () => {
-+		const label = draft.trim();
-+		if (!label || labels.includes(label) || labels.length >= 20) return;
-+		onChange([...labels, label]);
-+		setDraft("");
-+	};
-+	return (
-+		<div className="space-y-2">
-+			<label htmlFor={id} className="text-xs text-text-secondary">
-+				Labels
-+			</label>
-+			<div className="flex flex-wrap gap-1">
-+				{labels.map((label) => (
-+					<span
-+						key={label}
-+						className="inline-flex items-center gap-1 rounded-sm bg-surface-3 px-2 py-1 text-xs text-text-primary"
-+					>
-+						{label}
-+						<button
-+							type="button"
-+							aria-label={`Remove label ${label}`}
-+							onClick={() => onChange(labels.filter((item) => item !== label))}
-+						>
-+							<X size={12} />
-+						</button>
-+					</span>
-+				))}
-+			</div>
-+			<div className="flex gap-1">
-+				<input
-+					id={id}
-+					value={draft}
-+					maxLength={40}
-+					placeholder="Add a label"
-+					className="min-w-0 flex-1 rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
-+					onChange={(event) => setDraft(event.target.value)}
-+					onKeyDown={(event) => {
-+						if (event.key === "Enter") {
-+							event.preventDefault();
-+							event.stopPropagation();
-+							addLabel();
-+						}
-+					}}
-+				/>
-+				<Button
-+					size="sm"
-+					icon={<Plus size={14} />}
-+					aria-label="Add label"
-+					onClick={addLabel}
-+					disabled={!draft.trim() || labels.includes(draft.trim()) || labels.length >= 20}
-+				/>
-+			</div>
-+		</div>
-+	);
-+}
-diff --git a/web-ui/src/components/task-overrides-editor.tsx b/web-ui/src/components/task-overrides-editor.tsx
-new file mode 100644
-index 0000000000000000000000000000000000000000..d5f403e9a3c598f61cdea8c0a2b74b900aeda41d
---- /dev/null
-+++ b/web-ui/src/components/task-overrides-editor.tsx
-@@ -0,0 +1,182 @@
-+import * as Switch from "@radix-ui/react-switch";
-+import { getTaskOverridesError } from "@runtime-task-state";
-+import { Plus, X } from "lucide-react";
-+import { useId, useState } from "react";
-+import { TaskLabelsEditor } from "@/components/task-labels-editor";
-+import { Button } from "@/components/ui/button";
-+import type { LaunchProfileSummary, RuntimeAgentId, TaskOverrides } from "@/runtime/types";
-+
-+export function TaskOverridesEditor({
-+	value = {},
-+	onChange,
-+	agentId,
-+	launchProfiles = [],
-+}: {
-+	value?: TaskOverrides;
-+	onChange: (value: TaskOverrides) => void;
-+	agentId?: RuntimeAgentId | null;
-+	launchProfiles?: LaunchProfileSummary[];
-+}) {
-+	const id = useId();
-+	const [showValues, setShowValues] = useState(false);
-+	const environment = value.environment ?? { enabled: false, variables: [] };
-+	const error = getTaskOverridesError(value);
-+	const updateVariables = (variables: typeof environment.variables) =>
-+		onChange({ ...value, environment: { ...environment, variables } });
-+	return (
-+		<div className="mt-3 space-y-3 border-t border-border pt-3">
-+			<TaskLabelsEditor labels={value.labels} onChange={(labels) => onChange({ ...value, labels })} />
-+			{agentId && agentId !== "cline" && launchProfiles.length > 0 ? (
-+				<div className="space-y-1">
-+					<label htmlFor={`${id}-profile`} className="block text-xs text-text-secondary">
-+						Saved launch profile
-+					</label>
-+					<select
-+						id={`${id}-profile`}
-+						value={value.launchProfileId ?? ""}
-+						onChange={(event) =>
-+							onChange({
-+								...value,
-+								launchProfileId: event.target.value || undefined,
-+							})
-+						}
-+						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
-+					>
-+						<option value="">No saved profile</option>
-+						{launchProfiles
-+							.filter((profile) => profile.agentId === null || profile.agentId === agentId)
-+							.map((profile) => (
-+								<option key={profile.id} value={profile.id}>
-+									{profile.name}
-+								</option>
-+							))}
-+					</select>
-+					<p className="text-xs text-text-tertiary">
-+						Applies encrypted variables and saved CLI arguments when this task starts.
-+					</p>
-+				</div>
-+			) : null}
-+			{agentId === "codex" || agentId === "claude" ? (
-+				<div className="space-y-1">
-+					<label htmlFor={`${id}-model`} className="block text-xs text-text-secondary">
-+						CLI model
-+					</label>
-+					<input
-+						id={`${id}-model`}
-+						value={value.cliModel ?? ""}
-+						maxLength={200}
-+						placeholder="Use CLI default"
-+						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
-+						onChange={(event) => onChange({ ...value, cliModel: event.target.value })}
-+					/>
-+					<p className="text-xs text-text-tertiary">Optional model ID passed to {agentId} with --model.</p>
-+				</div>
-+			) : null}
-+			{agentId && agentId !== "cline" ? (
-+				<div className="space-y-2">
-+					<div className="flex items-center gap-2">
-+						<Switch.Root
-+							id={`${id}-env`}
-+							checked={environment.enabled}
-+							onCheckedChange={(enabled) => onChange({ ...value, environment: { ...environment, enabled } })}
-+							className="h-4 w-7 rounded-full bg-surface-4 data-[state=checked]:bg-accent"
-+						>
-+							<Switch.Thumb className="block size-3 translate-x-0.5 rounded-full bg-text-primary transition-transform data-[state=checked]:translate-x-3.5" />
-+						</Switch.Root>
-+						<label htmlFor={`${id}-env`} className="text-xs text-text-primary">
-+							Use extra environment variables
-+						</label>
-+					</div>
-+					{environment.enabled || environment.variables.length > 0 ? (
-+						<>
-+							<p className="text-xs text-text-tertiary">
-+								Values are saved with this task, unencrypted. They override inherited variables for this CLI
-+								only. Enter literal values without shell quotes.
-+							</p>
-+							{environment.variables.map((variable, index) => (
-+								<div key={index} className="flex gap-1">
-+									<input
-+										aria-label={`Variable name ${index + 1}`}
-+										placeholder="NAME"
-+										value={variable.name}
-+										autoComplete="off"
-+										spellCheck={false}
-+										className="w-2/5 min-w-0 rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
-+										onChange={(event) =>
-+											updateVariables(
-+												environment.variables.map((item, i) =>
-+													i === index ? { ...item, name: event.target.value } : item,
-+												),
-+											)
-+										}
-+									/>
-+									<input
-+										aria-label={`Variable value ${index + 1}`}
-+										placeholder="Value"
-+										type={showValues ? "text" : "password"}
-+										value={variable.value}
-+										autoComplete="off"
-+										className="min-w-0 flex-1 rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
-+										onChange={(event) =>
-+											updateVariables(
-+												environment.variables.map((item, i) =>
-+													i === index ? { ...item, value: event.target.value } : item,
-+												),
-+											)
-+										}
-+									/>
-+									<Button
-+										size="sm"
-+										variant="ghost"
-+										icon={<X size={14} />}
-+										aria-label={`Remove variable ${index + 1}`}
-+										onClick={() => updateVariables(environment.variables.filter((_, i) => i !== index))}
-+									/>
-+								</div>
-+							))}
-+							<div className="flex gap-2">
-+								<Button
-+									size="sm"
-+									icon={<Plus size={14} />}
-+									onClick={() => updateVariables([...environment.variables, { name: "", value: "" }])}
-+									disabled={environment.variables.length >= 100}
-+								>
-+									Add variable
-+								</Button>
-+								<Button size="sm" variant="ghost" onClick={() => setShowValues(!showValues)}>
-+									{showValues ? "Hide values" : "Show values"}
-+								</Button>
-+							</div>
-+						</>
-+					) : null}
-+				</div>
-+			) : null}
-+			{agentId && agentId !== "cline" ? (
-+				<div className="space-y-1">
-+					<label htmlFor={`${id}-args`} className="block text-xs text-text-secondary">
-+						Additional CLI arguments
-+					</label>
-+					<textarea
-+						id={`${id}-args`}
-+						value={(value.cliArgs ?? []).join("\n")}
-+						rows={2}
-+						placeholder={"One argument per line, e.g.\n-c\nmodel_context_window=100000"}
-+						onChange={(event) => {
-+							const cliArgs = event.target.value.split("\n").filter((arg) => arg.length > 0);
-+							onChange({ ...value, cliArgs: cliArgs.length > 0 ? cliArgs : undefined });
-+						}}
-+						className="w-full resize-y rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary focus:outline-border-focus"
-+					/>
-+					<p className="text-xs text-text-tertiary">
-+						Each line is one argument; no shell quoting or expansion is performed.
-+					</p>
-+				</div>
-+			) : null}
-+			{error ? (
-+				<p role="alert" className="text-xs text-status-red">
-+					{error}
-+				</p>
-+			) : null}
-+		</div>
-+	);
-+}
 diff --git a/web-ui/src/hooks/use-task-editor.test.tsx b/web-ui/src/hooks/use-task-editor.test.tsx
 index 20e7f4a1b1b50f7d402e41cd337b52fe0d466842..86696e1c5135333d43ea009b917336fa265f634f 100644
 --- a/web-ui/src/hooks/use-task-editor.test.tsx
@@ -3675,6 +3019,1121 @@ index 5c45d42d934802fd3a7b8bbd1fd73ae262378672..70ad9dfc1d4626a8efc6c420049e90e1
  	baseRef: string;
  	createdAt: number;
  	updatedAt: number;
+diff --git a/web-ui/tsconfig.json b/web-ui/tsconfig.json
+index ca8f7a130a310fd7b7c3f2867921325001d54c76..53a33074c7f45509e9b06c1df0a2cfb189873ba2 100644
+--- a/web-ui/tsconfig.json
++++ b/web-ui/tsconfig.json
+@@ -14,9 +14,11 @@
+     "paths": {
+       "@/*": ["src/*"],
+       "@runtime-agent-catalog": ["../src/core/agent-catalog.ts"],
++      "@runtime-cli-arguments": ["../src/core/cli-arguments.ts"],
+       "@runtime-cline-tool-call-display": ["../src/cline-sdk/cline-tool-call-display.ts"],
+       "@runtime-contract": ["../src/core/api-contract.ts"],
+       "@runtime-home-agent-session": ["../src/core/home-agent-session.ts"],
++      "@runtime-launch-profiles": ["../src/core/launch-profiles.ts"],
+       "@runtime-trpc": ["../src/trpc/app-router.ts"],
+       "@runtime-shortcuts": ["../src/config/shortcut-utils.ts"],
+       "@runtime-task-id": ["../src/core/task-id.ts"],
+diff --git a/web-ui/vite.config.ts b/web-ui/vite.config.ts
+index cd5982afd6a573666a65baa179c5faa85c14df6e..a0d0b1aab52f6d0b69cd426b692a9e560f3a1c1d 100644
+--- a/web-ui/vite.config.ts
++++ b/web-ui/vite.config.ts
+@@ -81,8 +81,10 @@ export default defineConfig({
+ 		alias: {
+ 			"@": resolve(__dirname, "src"),
+ 			"@runtime-agent-catalog": resolve(__dirname, "../src/core/agent-catalog.ts"),
++			"@runtime-cli-arguments": resolve(__dirname, "../src/core/cli-arguments.ts"),
+ 			"@runtime-cline-tool-call-display": resolve(__dirname, "../src/cline-sdk/cline-tool-call-display.ts"),
+ 			"@runtime-home-agent-session": resolve(__dirname, "../src/core/home-agent-session.ts"),
++			"@runtime-launch-profiles": resolve(__dirname, "../src/core/launch-profiles.ts"),
+ 			"@runtime-shortcuts": resolve(__dirname, "../src/config/shortcut-utils.ts"),
+ 			"@runtime-task-id": resolve(__dirname, "../src/core/task-id.ts"),
+ 			"@runtime-task-title": resolve(__dirname, "../src/core/task-title.ts"),
+diff --git a/web-ui/vitest.config.ts b/web-ui/vitest.config.ts
+index 93a58f02b79f8cc2a4e9e4198eb4a6ca21be5149..9b3249afa25a4cfcb5fed7a962d81a6ab0532e58 100644
+--- a/web-ui/vitest.config.ts
++++ b/web-ui/vitest.config.ts
+@@ -14,8 +14,10 @@ export default defineConfig({
+ 		alias: {
+ 			"@": resolve(__dirname, "src"),
+ 			"@runtime-agent-catalog": resolve(__dirname, "../src/core/agent-catalog.ts"),
++			"@runtime-cli-arguments": resolve(__dirname, "../src/core/cli-arguments.ts"),
+ 			"@runtime-cline-tool-call-display": resolve(__dirname, "../src/cline-sdk/cline-tool-call-display.ts"),
+ 			"@runtime-home-agent-session": resolve(__dirname, "../src/core/home-agent-session.ts"),
++			"@runtime-launch-profiles": resolve(__dirname, "../src/core/launch-profiles.ts"),
+ 			"@runtime-shortcuts": resolve(__dirname, "../src/config/shortcut-utils.ts"),
+ 			"@runtime-task-id": resolve(__dirname, "../src/core/task-id.ts"),
+ 			"@runtime-task-title": resolve(__dirname, "../src/core/task-title.ts"),
+diff --git a/src/commands/hook-events/claude-model.ts b/src/commands/hook-events/claude-model.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7861c7c9b8b259b1716598d126857fe78ffe815
+--- /dev/null
++++ b/src/commands/hook-events/claude-model.ts
+@@ -0,0 +1,45 @@
++import { open } from "node:fs/promises";
++import type { RuntimeTaskHookActivity } from "../../core/api-contract";
++import { asRecord, readStringField } from "./hook-utils";
++
++export function resolveClaudeTranscriptModel(text: string): string | null {
++	const lines = text.split(/\r?\n/);
++	for (let index = lines.length - 1; index >= 0; index--) {
++		try {
++			const entry = asRecord(JSON.parse(lines[index]));
++			if (!entry || entry.type !== "assistant" || entry.isSidechain === true) continue;
++			const message = asRecord(entry.message);
++			const model = message ? readStringField(message, "model") : null;
++			if (model && model !== "<synthetic>") return model;
++		} catch {
++			/* The first/last line of a transcript tail may be incomplete. */
++		}
++	}
++	return null;
++}
++
++export async function enrichClaudeModelMetadata<
++	T extends {
++		payload?: Record<string, unknown> | null;
++		metadata?: Partial<RuntimeTaskHookActivity>;
++	},
++>(args: T): Promise<T> {
++	if (args.metadata?.source !== "claude" || !args.payload) return args;
++	const path = readStringField(args.payload, "transcript_path");
++	if (!path) return args;
++	let file: Awaited<ReturnType<typeof open>> | undefined;
++	try {
++		file = await open(path, "r");
++		const stat = await file.stat();
++		if (!stat.isFile()) return args;
++		const bytes = Math.min(stat.size, 1024 * 1024);
++		const buffer = Buffer.alloc(bytes);
++		const { bytesRead } = await file.read(buffer, 0, bytes, stat.size - bytes);
++		const modelId = resolveClaudeTranscriptModel(buffer.subarray(0, bytesRead).toString("utf8"));
++		return modelId ? { ...args, metadata: { ...args.metadata, modelId } } : args;
++	} catch {
++		return args;
++	} finally {
++		await file?.close();
++	}
++}
+diff --git a/src/core/task-overrides.ts b/src/core/task-overrides.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..095c24e7ff6a2b003b2357cda2e8d6945c435a23
+--- /dev/null
++++ b/src/core/task-overrides.ts
+@@ -0,0 +1,52 @@
++import { z } from "zod";
++import { cliArgumentsInputSchema, cliArgumentsSchema } from "./cli-arguments";
++
++export const taskOverridesSchema = z.object({
++	labels: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
++	cliModel: z
++		.string()
++		.trim()
++		.max(200)
++		.refine((value) => !/[\r\n\0]/.test(value), "Invalid model ID")
++		.optional(),
++	launchProfileId: z
++		.string()
++		.trim()
++		.max(80)
++		.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid launch profile ID")
++		.optional(),
++	cliArgs: cliArgumentsSchema.optional(),
++	cliArgsInput: cliArgumentsInputSchema.optional(),
++	environment: z
++		.object({
++			enabled: z.boolean(),
++			variables: z
++				.array(
++					z.object({
++						name: z
++							.string()
++							.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use a valid environment variable name")
++							.refine((name) => !/^KANBAN_/i.test(name), "KANBAN_ variables are reserved"),
++						value: z.string().refine((value) => !value.includes("\0"), "Environment values cannot contain NUL"),
++					}),
++				)
++				.max(100)
++				.refine(
++					(variables) => new Set(variables.map(({ name }) => name.toUpperCase())).size === variables.length,
++					"Environment variable names must be unique",
++				),
++		})
++		.optional(),
++});
++
++export type TaskOverrides = z.infer<typeof taskOverridesSchema>;
++
++export function cloneTaskOverrides(value: TaskOverrides | undefined): TaskOverrides | undefined {
++	return value === undefined ? undefined : taskOverridesSchema.parse(value);
++}
++
++export function getTaskOverridesError(value: TaskOverrides | undefined): string | null {
++	if (value === undefined) return null;
++	const result = taskOverridesSchema.safeParse(value);
++	return result.success ? null : (result.error.issues[0]?.message ?? "Invalid task settings");
++}
+diff --git a/src/terminal/task-launch-overrides.ts b/src/terminal/task-launch-overrides.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..87fe539d736e7ba0b99ea93404002918564bea7c
+--- /dev/null
++++ b/src/terminal/task-launch-overrides.ts
+@@ -0,0 +1,68 @@
++import type { RuntimeAgentId } from "../core/api-contract";
++import { resolveCliArguments } from "../core/cli-arguments";
++import type { StoredLaunchProfile } from "../core/launch-profiles";
++import { type TaskOverrides, taskOverridesSchema } from "../core/task-overrides";
++import { buildCodexProviderArgs, validateCodexConfigArgs } from "./codex-launch-provider";
++
++/** Keep launch overrides in argv/env; never interpolate them into shell commands. */
++export function resolveTaskLaunchOverrides(
++	agentId: RuntimeAgentId,
++	args: string[],
++	overrides?: TaskOverrides,
++	profile?: StoredLaunchProfile | null,
++) {
++	const settings = overrides === undefined ? undefined : taskOverridesSchema.parse(overrides);
++	if (agentId === "cline") {
++		return { args: [...args], env: undefined, modelId: null };
++	}
++	const cliModel = settings?.cliModel?.trim();
++	const supportsModel = agentId === "codex" || agentId === "claude";
++	const nextArgs: string[] = [];
++	const providerArgs =
++		agentId === "codex" && profile?.codexProvider ? buildCodexProviderArgs(profile.codexProvider) : [];
++	const configuredArgs = [
++		...args,
++		...providerArgs,
++		...resolveCliArguments(profile ?? undefined),
++		...resolveCliArguments(settings),
++	];
++	if (agentId === "codex") validateCodexConfigArgs(configuredArgs);
++	for (let index = 0; index < configuredArgs.length; index++) {
++		const arg = configuredArgs[index];
++		if (supportsModel && cliModel) {
++			if (arg === "--model" || arg === "-m") {
++				index++;
++				continue;
++			}
++			if (arg.startsWith("--model=") || arg.startsWith("-m=")) continue;
++		}
++		nextArgs.push(arg);
++	}
++	if (supportsModel && cliModel) nextArgs.unshift("--model", cliModel);
++	const profileEnvironment = profile
++		? Object.fromEntries(profile.variables.map(({ name, value }) => [name, value]))
++		: {};
++	const taskEnvironment = settings?.environment?.enabled
++		? Object.fromEntries(settings.environment.variables.map(({ name, value }) => [name, value]))
++		: {};
++	const environment =
++		Object.keys(profileEnvironment).length > 0 || Object.keys(taskEnvironment).length > 0
++			? { ...profileEnvironment, ...taskEnvironment }
++			: undefined;
++	if (agentId === "codex" && profile?.codexProvider && !environment?.[profile.codexProvider.apiKeyEnv]?.trim()) {
++		throw new Error(
++			`Launch profile "${profile.name}" needs ${profile.codexProvider.apiKeyEnv}. Add its API key to the profile's encrypted environment variables or this task's environment variables.`,
++		);
++	}
++	let modelId: string | null = null;
++	if (supportsModel) {
++		for (let index = 0; index < nextArgs.length; index++) {
++			const arg = nextArgs[index];
++			if (arg === "--model" || arg === "-m") modelId = nextArgs[++index] ?? null;
++			else if (arg.startsWith("--model=") || arg.startsWith("-m=")) modelId = arg.slice(arg.indexOf("=") + 1);
++		}
++		if (!modelId && agentId === "claude")
++			modelId = environment?.ANTHROPIC_MODEL ?? process.env.ANTHROPIC_MODEL ?? null;
++	}
++	return { args: nextArgs, env: environment, modelId };
++}
+diff --git a/test/runtime/hooks-claude-model.test.ts b/test/runtime/hooks-claude-model.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e4b6eda1cb3f7ffc37f165089a4c8f3ae1badf3
+--- /dev/null
++++ b/test/runtime/hooks-claude-model.test.ts
+@@ -0,0 +1,35 @@
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import { enrichClaudeModelMetadata, resolveClaudeTranscriptModel } from "../../src/commands/hook-events/claude-model";
++
++describe("Claude model reporting", () => {
++	it("finds the latest main-session model across model changes and incomplete transcript lines", () => {
++		const lines = [
++			JSON.stringify({ type: "assistant", message: { model: "first-model" } }),
++			JSON.stringify({ type: "assistant", message: { model: "second-model" } }),
++			JSON.stringify({ type: "assistant", isSidechain: true, message: { model: "subagent-model" } }),
++			JSON.stringify({ type: "assistant", message: { model: "<synthetic>" } }),
++			'{"incomplete":',
++		];
++		expect(resolveClaudeTranscriptModel(lines.join("\n"))).toBe("second-model");
++		expect(resolveClaudeTranscriptModel("unrelated output")).toBeNull();
++	});
++
++	it("enriches hook metadata from the transcript and tolerates missing transcripts", async () => {
++		const dir = await mkdtemp(join(tmpdir(), "kanban-claude-model-"));
++		try {
++			const path = join(dir, "session.jsonl");
++			const args = { payload: { transcript_path: path }, metadata: { source: "claude", activityText: "Working" } };
++			expect(await enrichClaudeModelMetadata(args)).toEqual(args);
++			await writeFile(path, JSON.stringify({ type: "assistant", message: { model: "reported-model" } }));
++			expect(await enrichClaudeModelMetadata(args)).toEqual({
++				...args,
++				metadata: { ...args.metadata, modelId: "reported-model" },
++			});
++		} finally {
++			await rm(dir, { recursive: true, force: true });
++		}
++	});
++});
+diff --git a/test/runtime/task-overrides.test.ts b/test/runtime/task-overrides.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d099762c69afc334d763cf7f664badebc27ea3b
+--- /dev/null
++++ b/test/runtime/task-overrides.test.ts
+@@ -0,0 +1,175 @@
++import { describe, expect, it } from "vitest";
++import { runtimeBoardCardSchema, runtimeTaskSessionStartRequestSchema } from "../../src/core/api-contract";
++import type { StoredLaunchProfile } from "../../src/core/launch-profiles";
++import { addTaskToColumn, updateTask } from "../../src/core/task-board-mutations";
++import { taskOverridesSchema } from "../../src/core/task-overrides";
++import { resolveTaskLaunchOverrides } from "../../src/terminal/task-launch-overrides";
++
++describe("task overrides", () => {
++	const settings = {
++		labels: ["backend"],
++		cliModel: "custom-model",
++		environment: { enabled: true, variables: [{ name: "API_TOKEN", value: "spaces $literal `text`=value" }] },
++	};
++
++	it("persists a titled empty task through API validation and updates without substituting a prompt", () => {
++		const created = addTaskToColumn(
++			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },
++			"backlog",
++			{ title: "New task", prompt: "", agentId: "codex", baseRef: "main", taskOverrides: settings },
++			() => "task-1",
++		);
++		const restored = runtimeBoardCardSchema.parse(JSON.parse(JSON.stringify(created.task)));
++		expect(restored).toMatchObject({ title: "New task", prompt: "", taskOverrides: settings });
++		const updated = updateTask(created.board, created.task.id, {
++			title: "Configure model",
++			prompt: "",
++			baseRef: "main",
++		});
++		expect(updated.updated).toBe(true);
++		expect(updated.task).toMatchObject({ title: "Configure model", prompt: "", taskOverrides: settings });
++	});
++
++	it("persists overrides across API validation and unrelated task edits without sharing mutable state", () => {
++		const created = addTaskToColumn(
++			{ columns: [{ id: "backlog", title: "Backlog", cards: [] }], dependencies: [] },
++			"backlog",
++			{ prompt: "Implement", baseRef: "main", taskOverrides: settings },
++			() => "task-1",
++		);
++		const restored = runtimeBoardCardSchema.parse(JSON.parse(JSON.stringify(created.task)));
++		expect(restored.taskOverrides).toEqual(settings);
++		expect(created.task.taskOverrides?.environment).not.toBe(settings.environment);
++		const edited = updateTask(created.board, created.task.id, {
++			title: "Renamed",
++			prompt: "Implement",
++			baseRef: "main",
++		});
++		expect(edited.task?.taskOverrides).toEqual(settings);
++		const start = runtimeTaskSessionStartRequestSchema.parse({
++			taskId: created.task.id,
++			prompt: "Implement",
++			baseRef: "main",
++			taskOverrides: restored.taskOverrides,
++		});
++		expect(resolveTaskLaunchOverrides("codex", ["--model=old", "--profile", "work"], start.taskOverrides)).toEqual({
++			args: ["--model", "custom-model", "--profile", "work"],
++			env: { API_TOKEN: "spaces $literal `text`=value" },
++			modelId: "custom-model",
++		});
++	});
++
++	it.each(["codex", "claude"] as const)(
++		"passes enabled env literally to %s and does not mutate parent env or args",
++		(agentId) => {
++			const original = process.env.API_TOKEN;
++			const args = ["-m", "old", "--verbose"];
++			const launch = resolveTaskLaunchOverrides(agentId, args, settings);
++			expect(launch.env?.API_TOKEN).toBe(settings.environment.variables[0].value);
++			expect(args).toEqual(["-m", "old", "--verbose"]);
++			expect(process.env.API_TOKEN).toBe(original);
++			expect(
++				resolveTaskLaunchOverrides(agentId, [], {
++					...settings,
++					environment: { ...settings.environment, enabled: false },
++				}).env,
++			).toBeUndefined();
++			expect(resolveTaskLaunchOverrides(agentId, []).env).toBeUndefined();
++		},
++	);
++
++	it("combines saved profile args and secrets before task-level overrides", () => {
++		const profile: StoredLaunchProfile = {
++			id: "profile-1",
++			name: "OpenAI work",
++			agentId: "codex",
++			cliArgs: ["-c", "profile_setting=true"],
++			variables: [{ name: "OPENAI_API_KEY", value: "profile-key" }],
++		};
++		expect(
++			resolveTaskLaunchOverrides(
++				"codex",
++				["--model", "default"],
++				{
++					cliArgs: ["-c", "task_setting=true"],
++					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
++				},
++				profile,
++			),
++		).toEqual({
++			args: ["--model", "default", "-c", "profile_setting=true", "-c", "task_setting=true"],
++			env: { OPENAI_API_KEY: "task-key" },
++			modelId: "default",
++		});
++	});
++
++	it("overrides the local Codex provider with CLIProxy and passes its key only through env", () => {
++		const profile: StoredLaunchProfile = {
++			id: "proxy",
++			name: "Work proxy",
++			agentId: "codex",
++			codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
++			cliArgs: ["-c", "model_context_window=100000"],
++			variables: [{ name: "OPENAI_API_KEY", value: "encrypted-profile-key" }],
++		};
++		const result = resolveTaskLaunchOverrides("codex", ["-c", 'model_provider="openai"'], undefined, profile);
++		expect(result.args).toEqual([
++			"-c",
++			'model_provider="openai"',
++			"-c",
++			'model_provider="cliproxy"',
++			"-c",
++			'model_providers.cliproxy.name="cliproxy"',
++			"-c",
++			'model_providers.cliproxy.base_url="http://127.0.0.1:8317/v1"',
++			"-c",
++			'model_providers.cliproxy.wire_api="responses"',
++			"-c",
++			'model_providers.cliproxy.env_key="OPENAI_API_KEY"',
++			"-c",
++			"model_providers.cliproxy.requires_openai_auth=false",
++			"-c",
++			"model_context_window=100000",
++		]);
++		expect(result.env).toEqual({ OPENAI_API_KEY: "encrypted-profile-key" });
++		expect(result.args.join(" ")).not.toContain("encrypted-profile-key");
++		expect(
++			resolveTaskLaunchOverrides(
++				"codex",
++				[],
++				{
++					cliArgs: ["-c", 'model_provider="task-proxy"'],
++					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
++				},
++				profile,
++			),
++		).toMatchObject({
++			env: { OPENAI_API_KEY: "task-key" },
++			args: expect.arrayContaining(['model_provider="task-proxy"']),
++		});
++		expect(resolveTaskLaunchOverrides("claude", [], undefined, { ...profile, agentId: null }).args).toEqual(
++			profile.cliArgs,
++		);
++		expect(() => resolveTaskLaunchOverrides("codex", [], undefined, { ...profile, variables: [] })).toThrow(
++			"needs OPENAI_API_KEY",
++		);
++	});
++
++	it("does not apply CLI settings to the native Cline SDK", () => {
++		expect(resolveTaskLaunchOverrides("cline", [], settings)).toEqual({ args: [], env: undefined, modelId: null });
++	});
++
++	it.each([
++		{ variables: [{ name: "BAD=NAME", value: "x" }] },
++		{ variables: [{ name: "KANBAN_TASK_ID", value: "other-task" }] },
++		{ variables: [{ name: "TOKEN", value: "x\0y" }] },
++		{
++			variables: [
++				{ name: "TOKEN", value: "one" },
++				{ name: "TOKEN", value: "two" },
++			],
++		},
++	])("rejects invalid or ambiguous environment variables", ({ variables }) => {
++		expect(taskOverridesSchema.safeParse({ environment: { enabled: true, variables } }).success).toBe(false);
++	});
++});
+diff --git a/web-ui/src/components/task-labels-editor.tsx b/web-ui/src/components/task-labels-editor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..a697f094deb92047862650df403ded3bd2379607
+--- /dev/null
++++ b/web-ui/src/components/task-labels-editor.tsx
+@@ -0,0 +1,68 @@
++import { Plus, X } from "lucide-react";
++import { useId, useState } from "react";
++import { Button } from "@/components/ui/button";
++
++export function TaskLabelsEditor({
++	labels = [],
++	onChange,
++}: {
++	labels?: string[];
++	onChange: (labels: string[]) => void;
++}) {
++	const id = useId();
++	const [draft, setDraft] = useState("");
++	const addLabel = () => {
++		const label = draft.trim();
++		if (!label || labels.includes(label) || labels.length >= 20) return;
++		onChange([...labels, label]);
++		setDraft("");
++	};
++	return (
++		<div className="space-y-2">
++			<label htmlFor={id} className="text-xs text-text-secondary">
++				Labels
++			</label>
++			<div className="flex flex-wrap gap-1">
++				{labels.map((label) => (
++					<span
++						key={label}
++						className="inline-flex items-center gap-1 rounded-sm bg-surface-3 px-2 py-1 text-xs text-text-primary"
++					>
++						{label}
++						<button
++							type="button"
++							aria-label={`Remove label ${label}`}
++							onClick={() => onChange(labels.filter((item) => item !== label))}
++						>
++							<X size={12} />
++						</button>
++					</span>
++				))}
++			</div>
++			<div className="flex gap-1">
++				<input
++					id={id}
++					value={draft}
++					maxLength={40}
++					placeholder="Add a label"
++					className="min-w-0 flex-1 rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
++					onChange={(event) => setDraft(event.target.value)}
++					onKeyDown={(event) => {
++						if (event.key === "Enter") {
++							event.preventDefault();
++							event.stopPropagation();
++							addLabel();
++						}
++					}}
++				/>
++				<Button
++					size="sm"
++					icon={<Plus size={14} />}
++					aria-label="Add label"
++					onClick={addLabel}
++					disabled={!draft.trim() || labels.includes(draft.trim()) || labels.length >= 20}
++				/>
++			</div>
++		</div>
++	);
++}
+diff --git a/web-ui/src/components/task-overrides-editor.tsx b/web-ui/src/components/task-overrides-editor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d4ff440d18fd1a53b7f70b1c6599ad3ac8f055e
+--- /dev/null
++++ b/web-ui/src/components/task-overrides-editor.tsx
+@@ -0,0 +1,173 @@
++import * as Switch from "@radix-ui/react-switch";
++import { getTaskOverridesError } from "@runtime-task-state";
++import { Plus, X } from "lucide-react";
++import { useId, useState } from "react";
++import { CliArgumentsEditor } from "@/components/cli-arguments-editor";
++import { TaskLabelsEditor } from "@/components/task-labels-editor";
++import { Button } from "@/components/ui/button";
++import type { LaunchProfileSummary, RuntimeAgentId, TaskOverrides } from "@/runtime/types";
++
++export function TaskOverridesEditor({
++	value = {},
++	onChange,
++	agentId,
++	launchProfiles = [],
++}: {
++	value?: TaskOverrides;
++	onChange: (value: TaskOverrides) => void;
++	agentId?: RuntimeAgentId | null;
++	launchProfiles?: LaunchProfileSummary[];
++}) {
++	const id = useId();
++	const [showValues, setShowValues] = useState(false);
++	const environment = value.environment ?? { enabled: false, variables: [] };
++	const error = getTaskOverridesError(value);
++	const selectedProfile = launchProfiles.find((profile) => profile.id === value.launchProfileId);
++	const updateVariables = (variables: typeof environment.variables) =>
++		onChange({ ...value, environment: { ...environment, variables } });
++	return (
++		<div className="mt-3 space-y-3 border-t border-border pt-3">
++			<TaskLabelsEditor labels={value.labels} onChange={(labels) => onChange({ ...value, labels })} />
++			{agentId && agentId !== "cline" && launchProfiles.length > 0 ? (
++				<div className="space-y-1">
++					<label htmlFor={`${id}-profile`} className="block text-xs text-text-secondary">
++						Saved launch profile
++					</label>
++					<select
++						id={`${id}-profile`}
++						value={value.launchProfileId ?? ""}
++						onChange={(event) =>
++							onChange({
++								...value,
++								launchProfileId: event.target.value || undefined,
++							})
++						}
++						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
++					>
++						<option value="">No saved profile</option>
++						{launchProfiles
++							.filter((profile) => profile.agentId === null || profile.agentId === agentId)
++							.map((profile) => (
++								<option key={profile.id} value={profile.id}>
++									{profile.name}
++								</option>
++							))}
++					</select>
++					<p className="text-xs text-text-tertiary">
++						{agentId === "codex" && selectedProfile?.codexProvider
++							? `Provider: ${selectedProfile.codexProvider.id} · ${selectedProfile.codexProvider.baseUrl}`
++							: "Applies encrypted variables and saved CLI arguments when this task starts."}
++					</p>
++				</div>
++			) : null}
++			{agentId === "codex" || agentId === "claude" ? (
++				<div className="space-y-1">
++					<label htmlFor={`${id}-model`} className="block text-xs text-text-secondary">
++						CLI model
++					</label>
++					<input
++						id={`${id}-model`}
++						value={value.cliModel ?? ""}
++						maxLength={200}
++						placeholder="Use CLI default"
++						className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
++						onChange={(event) => onChange({ ...value, cliModel: event.target.value })}
++					/>
++					<p className="text-xs text-text-tertiary">Optional model ID passed to {agentId} with --model.</p>
++				</div>
++			) : null}
++			{agentId && agentId !== "cline" ? (
++				<div className="space-y-2">
++					<div className="flex items-center gap-2">
++						<Switch.Root
++							id={`${id}-env`}
++							checked={environment.enabled}
++							onCheckedChange={(enabled) => onChange({ ...value, environment: { ...environment, enabled } })}
++							className="h-4 w-7 rounded-full bg-surface-4 data-[state=checked]:bg-accent"
++						>
++							<Switch.Thumb className="block size-3 translate-x-0.5 rounded-full bg-text-primary transition-transform data-[state=checked]:translate-x-3.5" />
++						</Switch.Root>
++						<label htmlFor={`${id}-env`} className="text-xs text-text-primary">
++							Use extra environment variables
++						</label>
++					</div>
++					{environment.enabled || environment.variables.length > 0 ? (
++						<>
++							<p className="text-xs text-text-tertiary">
++								Values are saved with this task, unencrypted. They override inherited variables for this CLI
++								only. Enter literal values without shell quotes.
++							</p>
++							{environment.variables.map((variable, index) => (
++								<div key={index} className="flex gap-1">
++									<input
++										aria-label={`Variable name ${index + 1}`}
++										placeholder="NAME"
++										value={variable.name}
++										autoComplete="off"
++										spellCheck={false}
++										className="w-2/5 min-w-0 rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
++										onChange={(event) =>
++											updateVariables(
++												environment.variables.map((item, i) =>
++													i === index ? { ...item, name: event.target.value } : item,
++												),
++											)
++										}
++									/>
++									<input
++										aria-label={`Variable value ${index + 1}`}
++										placeholder="Value"
++										type={showValues ? "text" : "password"}
++										value={variable.value}
++										autoComplete="off"
++										className="min-w-0 flex-1 rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary"
++										onChange={(event) =>
++											updateVariables(
++												environment.variables.map((item, i) =>
++													i === index ? { ...item, value: event.target.value } : item,
++												),
++											)
++										}
++									/>
++									<Button
++										size="sm"
++										variant="ghost"
++										icon={<X size={14} />}
++										aria-label={`Remove variable ${index + 1}`}
++										onClick={() => updateVariables(environment.variables.filter((_, i) => i !== index))}
++									/>
++								</div>
++							))}
++							<div className="flex gap-2">
++								<Button
++									size="sm"
++									icon={<Plus size={14} />}
++									onClick={() => updateVariables([...environment.variables, { name: "", value: "" }])}
++									disabled={environment.variables.length >= 100}
++								>
++									Add variable
++								</Button>
++								<Button size="sm" variant="ghost" onClick={() => setShowValues(!showValues)}>
++									{showValues ? "Hide values" : "Show values"}
++								</Button>
++							</div>
++						</>
++					) : null}
++				</div>
++			) : null}
++			{agentId && agentId !== "cline" ? (
++				<CliArgumentsEditor
++					label="Additional CLI arguments"
++					input={value.cliArgsInput}
++					args={value.cliArgs}
++					onChange={(cliArgsInput) => onChange({ ...value, cliArgs: undefined, cliArgsInput })}
++				/>
++			) : null}
++			{error ? (
++				<p role="alert" className="text-xs text-status-red">
++					{error}
++				</p>
++			) : null}
++		</div>
++	);
++}
+diff --git a/src/config/launch-profiles.ts b/src/config/launch-profiles.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..85766c7564704eb6d7eef794a2bbc4f74f496351
+--- /dev/null
++++ b/src/config/launch-profiles.ts
+@@ -0,0 +1,209 @@
++import { execFile } from "node:child_process";
++import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
++import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
++import { homedir, userInfo } from "node:os";
++import { promisify } from "node:util";
++import { resolveCliArguments } from "../core/cli-arguments";
++
++import {
++	type LaunchProfileSave,
++	type LaunchProfileSummary,
++	launchProfileSaveSchema,
++	launchProfilesFileSchema,
++	launchProfileVariableNameSchema,
++	type StoredLaunchProfile,
++	storedLaunchProfileSchema,
++	summarizeLaunchProfile,
++} from "../core/launch-profiles";
++import { lockedFileSystem } from "../fs/locked-file-system";
++
++const execFileAsync = promisify(execFile);
++const PROFILE_DIR = ".cline/kanban";
++const PROFILE_FILE = "launch-profiles.enc.json";
++const KEY_FILE = ".launch-profiles.key";
++const KEYCHAIN_SERVICE = "com.cline.kanban.launch-profiles";
++const ENVELOPE_VERSION = 1;
++
++interface EncryptedEnvelope {
++	version: typeof ENVELOPE_VERSION;
++	iv: string;
++	tag: string;
++	ciphertext: string;
++}
++
++function profileDirectory(): string {
++	return `${homedir()}/${PROFILE_DIR}`;
++}
++
++export function getLaunchProfilesPath(): string {
++	return `${profileDirectory()}/${PROFILE_FILE}`;
++}
++
++function getKeyFilePath(): string {
++	return `${profileDirectory()}/${KEY_FILE}`;
++}
++
++async function readMacKeychain(): Promise<Buffer | null> {
++	if (process.platform !== "darwin") return null;
++	try {
++		const { stdout } = await execFileAsync("/usr/bin/security", [
++			"find-generic-password",
++			"-a",
++			userInfo().username,
++			"-s",
++			KEYCHAIN_SERVICE,
++			"-w",
++		]);
++		const value = stdout.trim();
++		return value ? Buffer.from(value, "base64") : null;
++	} catch {
++		return null;
++	}
++}
++
++async function writeMacKeychain(key: Buffer): Promise<void> {
++	if (process.platform !== "darwin") return;
++	await execFileAsync("/usr/bin/security", [
++		"add-generic-password",
++		"-U",
++		"-a",
++		userInfo().username,
++		"-s",
++		KEYCHAIN_SERVICE,
++		"-w",
++		key.toString("base64"),
++	]);
++}
++
++async function getEncryptionKey(): Promise<Buffer> {
++	const keychainKey = await readMacKeychain();
++	if (keychainKey?.length === 32) return keychainKey;
++	const keyPath = getKeyFilePath();
++	try {
++		const key = await readFile(keyPath);
++		if (key.length === 32) return key;
++	} catch {
++		// Generate below.
++	}
++	const key = randomBytes(32);
++	await mkdir(profileDirectory(), { recursive: true, mode: 0o700 });
++	if (process.platform === "darwin") {
++		try {
++			await writeMacKeychain(key);
++			return key;
++		} catch {
++			// Keep a locked-down fallback if the user has no keychain session.
++		}
++	}
++	await writeFile(keyPath, key, { mode: 0o600 });
++	await chmod(keyPath, 0o600);
++	return key;
++}
++
++export function encryptLaunchProfiles(
++	profiles: StoredLaunchProfile[],
++	key: Buffer,
++	iv = randomBytes(12),
++): EncryptedEnvelope {
++	if (key.length !== 32) throw new Error("Launch profile encryption key must be 32 bytes.");
++	const cipher = createCipheriv("aes-256-gcm", key, iv);
++	const ciphertext = Buffer.concat([cipher.update(JSON.stringify({ profiles })), cipher.final()]);
++	return {
++		version: ENVELOPE_VERSION,
++		iv: iv.toString("base64"),
++		tag: cipher.getAuthTag().toString("base64"),
++		ciphertext: ciphertext.toString("base64"),
++	};
++}
++
++export function decryptLaunchProfiles(envelope: EncryptedEnvelope, key: Buffer): StoredLaunchProfile[] {
++	if (key.length !== 32 || envelope.version !== ENVELOPE_VERSION) throw new Error("Invalid launch profile envelope.");
++	const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
++	decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
++	const plaintext = Buffer.concat([
++		decipher.update(Buffer.from(envelope.ciphertext, "base64")),
++		decipher.final(),
++	]).toString("utf8");
++	const parsed = launchProfilesFileSchema.parse(JSON.parse(plaintext));
++	return parsed.profiles;
++}
++
++async function readStoredProfiles(): Promise<StoredLaunchProfile[]> {
++	let encryptedText: string;
++	try {
++		encryptedText = await readFile(getLaunchProfilesPath(), "utf8");
++	} catch (error) {
++		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
++			return [];
++		}
++		throw error;
++	}
++	const envelope = JSON.parse(encryptedText) as EncryptedEnvelope;
++	return decryptLaunchProfiles(envelope, await getEncryptionKey());
++}
++
++export async function loadLaunchProfileSummaries(): Promise<LaunchProfileSummary[]> {
++	return (await readStoredProfiles()).map(summarizeLaunchProfile);
++}
++
++export async function resolveLaunchProfile(profileId: string | undefined): Promise<StoredLaunchProfile | null> {
++	if (!profileId) return null;
++	const profile = (await readStoredProfiles()).find((candidate) => candidate.id === profileId);
++	return profile ?? null;
++}
++
++function normalizeProfileVariables(
++	variables: Array<{ name: string; value: string }>,
++): Array<{ name: string; value: string }> {
++	const seen = new Set<string>();
++	return variables.filter((variable) => {
++		launchProfileVariableNameSchema.parse(variable.name);
++		const key = variable.name.toUpperCase();
++		if (seen.has(key)) return false;
++		seen.add(key);
++		return true;
++	});
++}
++
++export async function saveLaunchProfiles(inputs: LaunchProfileSave[]): Promise<LaunchProfileSummary[]> {
++	const parsed = inputs.map((input) => launchProfileSaveSchema.parse(input));
++	return await lockedFileSystem.withLocks([{ path: getLaunchProfilesPath(), type: "file" }], async () => {
++		const existing = await readStoredProfiles();
++		const existingById = new Map(existing.map((profile) => [profile.id, profile]));
++		const profiles = parsed.map((input) => {
++			const id = input.id ?? randomUUID().replaceAll("-", "").slice(0, 12);
++			const previous = existingById.get(id);
++			const previousValues = new Map(
++				previous?.variables.map((variable) => [variable.name.toUpperCase(), variable.value]),
++			);
++			const variables = normalizeProfileVariables(
++				input.variables.flatMap((variable) => {
++					const previousValue = previousValues.get(variable.name.toUpperCase());
++					if (variable.value === undefined && previousValue !== undefined) {
++						return [{ name: variable.name, value: previousValue }];
++					}
++					if (variable.value === null || variable.value === "") return [];
++					return variable.value === undefined ? [] : [{ name: variable.name, value: variable.value }];
++				}),
++			);
++			return storedLaunchProfileSchema.parse({
++				id,
++				name: input.name,
++				agentId: input.agentId ?? null,
++				codexProvider: input.codexProvider,
++				cliArgs: resolveCliArguments(input),
++				cliArgsInput: input.cliArgsInput,
++				variables,
++			});
++		});
++		const envelope = encryptLaunchProfiles(profiles, await getEncryptionKey());
++		await mkdir(profileDirectory(), { recursive: true, mode: 0o700 });
++		await writeFile(getLaunchProfilesPath(), `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
++		await chmod(getLaunchProfilesPath(), 0o600);
++		return profiles.map(summarizeLaunchProfile);
++	});
++}
++
++export async function deleteLaunchProfilesFile(): Promise<void> {
++	await rm(getLaunchProfilesPath(), { force: true });
++}
+diff --git a/src/core/launch-profiles.ts b/src/core/launch-profiles.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..34206e3dd12dc69c13d301748aba3cb12cf12557
+--- /dev/null
++++ b/src/core/launch-profiles.ts
+@@ -0,0 +1,120 @@
++import { z } from "zod";
++import { cliArgumentsInputSchema, cliArgumentsSchema } from "./cli-arguments";
++
++// Keep this module dependency-free from api-contract: api-contract imports
++// these schemas for the browser/runtime boundary, so importing it back here
++// would create an initialization cycle.
++const launchProfileAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "kiro", "cline"]);
++
++const safeIdentifier = z
++	.string()
++	.trim()
++	.min(1)
++	.max(80)
++	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Use letters, numbers, dots, underscores, or hyphens.");
++
++export const launchProfileVariableNameSchema = z
++	.string()
++	.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use a valid environment variable name")
++	.refine((name) => !/^KANBAN_/i.test(name), "KANBAN_ variables are reserved");
++
++export const codexLaunchProviderSchema = z.object({
++	id: z
++		.string()
++		.trim()
++		.min(1)
++		.max(80)
++		.regex(/^[A-Za-z0-9_-]+$/, "Provider ID must use letters, numbers, underscores, or hyphens.")
++		.refine(
++			(id) => !["openai", "ollama", "lmstudio", "amazon-bedrock"].includes(id),
++			"Use a custom provider ID, such as cliproxy.",
++		),
++	baseUrl: z
++		.string()
++		.trim()
++		.max(500)
++		.refine((value) => {
++			try {
++				const url = new URL(value);
++				return (
++					["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash
++				);
++			} catch {
++				return false;
++			}
++		}, "Enter an HTTP(S) API base URL without credentials, query parameters, or a fragment."),
++	apiKeyEnv: launchProfileVariableNameSchema,
++});
++
++export const launchProfileVariableSchema = z.object({
++	name: launchProfileVariableNameSchema,
++	value: z.string().refine((value) => !value.includes("\0"), "Environment values cannot contain NUL"),
++});
++
++export const launchProfileSummaryVariableSchema = z.object({
++	name: launchProfileVariableNameSchema,
++	configured: z.boolean(),
++});
++
++export const launchProfileSummarySchema = z.object({
++	id: safeIdentifier,
++	name: z.string().trim().min(1).max(80),
++	agentId: launchProfileAgentIdSchema.nullable(),
++	codexProvider: codexLaunchProviderSchema.optional(),
++	cliArgs: cliArgumentsSchema,
++	cliArgsInput: cliArgumentsInputSchema.optional(),
++	variables: z.array(launchProfileSummaryVariableSchema).max(100),
++});
++
++export const launchProfileSaveVariableSchema = z.object({
++	name: launchProfileVariableNameSchema,
++	/** Undefined preserves an already stored secret; null or an empty string clears it. */
++	value: z
++		.string()
++		.nullable()
++		.optional()
++		.refine(
++			(value) => value === undefined || value === null || !value.includes("\0"),
++			"Environment values cannot contain NUL",
++		),
++});
++
++export const launchProfileSaveSchema = z.object({
++	id: safeIdentifier.optional(),
++	name: z.string().trim().min(1).max(80),
++	agentId: launchProfileAgentIdSchema.nullable().optional(),
++	codexProvider: codexLaunchProviderSchema.optional(),
++	cliArgs: cliArgumentsSchema,
++	cliArgsInput: cliArgumentsInputSchema.optional(),
++	variables: z.array(launchProfileSaveVariableSchema).max(100),
++});
++
++export const storedLaunchProfileSchema = z.object({
++	id: safeIdentifier,
++	name: z.string().trim().min(1).max(80),
++	agentId: launchProfileAgentIdSchema.nullable(),
++	codexProvider: codexLaunchProviderSchema.optional(),
++	cliArgs: cliArgumentsSchema,
++	cliArgsInput: cliArgumentsInputSchema.optional(),
++	variables: z.array(launchProfileVariableSchema).max(100),
++});
++
++export const launchProfilesFileSchema = z.object({
++	profiles: z.array(storedLaunchProfileSchema).max(50),
++});
++
++export type LaunchProfileSummary = z.infer<typeof launchProfileSummarySchema>;
++export type LaunchProfileSave = z.infer<typeof launchProfileSaveSchema>;
++export type StoredLaunchProfile = z.infer<typeof storedLaunchProfileSchema>;
++
++export function summarizeLaunchProfile(profile: StoredLaunchProfile): LaunchProfileSummary {
++	return {
++		id: profile.id,
++		name: profile.name,
++		agentId: profile.agentId,
++		...(profile.codexProvider ? { codexProvider: { ...profile.codexProvider } } : {}),
++		cliArgs: [...profile.cliArgs],
++		...(profile.cliArgsInput ? { cliArgsInput: { ...profile.cliArgsInput } } : {}),
++		variables: profile.variables.map(({ name }) => ({ name, configured: true })),
++	};
++}
+diff --git a/test/runtime/launch-profiles.test.ts b/test/runtime/launch-profiles.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e57354a3edc23a49cce13c0e4efa56d27ed41048
+--- /dev/null
++++ b/test/runtime/launch-profiles.test.ts
+@@ -0,0 +1,64 @@
++import { randomBytes } from "node:crypto";
++import { describe, expect, it } from "vitest";
++import { decryptLaunchProfiles, encryptLaunchProfiles } from "../../src/config/launch-profiles";
++import {
++	codexLaunchProviderSchema,
++	launchProfileSaveSchema,
++	type StoredLaunchProfile,
++	summarizeLaunchProfile,
++} from "../../src/core/launch-profiles";
++
++describe("launch profile encryption", () => {
++	const profiles: StoredLaunchProfile[] = [
++		{
++			id: "openai-work",
++			name: "OpenAI work",
++			agentId: "codex",
++			cliArgs: ["-c", "model_context_window=100000"],
++			cliArgsInput: { mode: "command", text: "-c model_context_window=100000\n" },
++			codexProvider: { id: "cliproxy", baseUrl: "http://localhost:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
++			variables: [{ name: "OPENAI_API_KEY", value: "secret-value" }],
++		},
++	];
++
++	it("round trips profiles without putting secrets in the envelope plaintext", () => {
++		const key = randomBytes(32);
++		const envelope = encryptLaunchProfiles(profiles, key);
++		expect(JSON.stringify(envelope)).not.toContain("secret-value");
++		expect(() => decryptLaunchProfiles(envelope, randomBytes(32))).toThrow();
++	});
++
++	it("decrypts with the original key", () => {
++		const key = randomBytes(32);
++		const envelope = encryptLaunchProfiles(profiles, key);
++		expect(decryptLaunchProfiles(envelope, key)).toEqual(profiles);
++	});
++
++	it("returns provider routing but never API key values in settings summaries", () => {
++		const summary = summarizeLaunchProfile(profiles[0]);
++		expect(summary.codexProvider).toEqual(profiles[0].codexProvider);
++		expect(summary.codexProvider).not.toBe(profiles[0].codexProvider);
++		expect(summary.variables).toEqual([{ name: "OPENAI_API_KEY", configured: true }]);
++		expect(JSON.stringify(summary)).not.toContain("secret-value");
++	});
++
++	it("keeps older profiles without provider settings valid", () => {
++		const { codexProvider: _provider, cliArgsInput: _input, ...legacy } = profiles[0];
++		expect(launchProfileSaveSchema.parse(legacy)).toEqual(legacy);
++		const key = randomBytes(32);
++		expect(decryptLaunchProfiles(encryptLaunchProfiles([legacy], key), key)).toEqual([legacy]);
++	});
++
++	it.each([
++		{ id: "openai" },
++		{ id: "proxy.nested" },
++		{ id: 'proxy"injection' },
++		{ baseUrl: "not a URL" },
++		{ baseUrl: "file:///tmp/socket" },
++		{ baseUrl: "https://user:secret@proxy.example/v1" },
++		{ baseUrl: "https://proxy.example/v1?key=secret" },
++		{ apiKeyEnv: "KANBAN_TASK_ID" },
++	])("rejects invalid provider settings: %j", (invalid) => {
++		expect(codexLaunchProviderSchema.safeParse({ ...profiles[0].codexProvider, ...invalid }).success).toBe(false);
++	});
++});
 diff --git a/web-ui/src/components/task-create-dialog.test.tsx b/web-ui/src/components/task-create-dialog.test.tsx
 new file mode 100644
 index 0000000000000000000000000000000000000000..19ce482daed09cc328637141d185c729a53f2a5f
@@ -3764,5 +4223,530 @@ index 0000000000000000000000000000000000000000..19ce482daed09cc328637141d185c729
 +		expect(startButton().disabled).toBe(true);
 +		act(() => startButton().click());
 +		expect(props.onStartEmptyTask).not.toHaveBeenCalled();
++	});
++});
+diff --git a/src/terminal/codex-launch-provider.ts b/src/terminal/codex-launch-provider.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..30c3193698b6a03f60f515da553813db16d46d61
+--- /dev/null
++++ b/src/terminal/codex-launch-provider.ts
+@@ -0,0 +1,34 @@
++import { codexLaunchProviderSchema, type StoredLaunchProfile } from "../core/launch-profiles";
++
++export function validateCodexConfigArgs(args: string[]): void {
++	for (let i = 0; i < args.length; i++) {
++		const arg = args[i];
++		if (arg === "-c" || arg === "--config") {
++			if (!args[i + 1]?.includes("=")) throw new Error("Each Codex -c / --config flag needs a key=value argument.");
++			i++;
++		} else if (/^\s*-c\s|^\s*--config\s|^\s+[-]|^\s*['"]?model_[A-Za-z0-9_.-]*=/.test(arg)) {
++			throw new Error(
++				"Codex CLI arguments have an unpaired config setting or a combined command. Select Command line format and paste -c 'key=value' arguments, or put each -c and its value on separate lines.",
++			);
++		}
++	}
++}
++
++/** Override provider routing for this process without changing ~/.codex/config.toml or auth.json. */
++export function buildCodexProviderArgs(provider: NonNullable<StoredLaunchProfile["codexProvider"]>): string[] {
++	const { id, baseUrl, apiKeyEnv } = codexLaunchProviderSchema.parse(provider);
++	return [
++		"-c",
++		`model_provider=${JSON.stringify(id)}`,
++		"-c",
++		`model_providers.${id}.name=${JSON.stringify(id)}`,
++		"-c",
++		`model_providers.${id}.base_url=${JSON.stringify(baseUrl)}`,
++		"-c",
++		`model_providers.${id}.wire_api="responses"`,
++		"-c",
++		`model_providers.${id}.env_key=${JSON.stringify(apiKeyEnv)}`,
++		"-c",
++		`model_providers.${id}.requires_openai_auth=false`,
++	];
++}
+diff --git a/web-ui/src/components/codex-launch-provider-editor.tsx b/web-ui/src/components/codex-launch-provider-editor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ebff3f978f1153e12bb4e7bb7991ecc47541c9f
+--- /dev/null
++++ b/web-ui/src/components/codex-launch-provider-editor.tsx
+@@ -0,0 +1,81 @@
++import { useId } from "react";
++import { NativeSelect } from "@/components/ui/native-select";
++import type { LaunchProfileSummary } from "@/runtime/types";
++
++type CodexLaunchProvider = NonNullable<LaunchProfileSummary["codexProvider"]>;
++
++export function CodexLaunchProviderEditor({
++	value,
++	onChange,
++}: {
++	value?: CodexLaunchProvider;
++	onChange: (value: CodexLaunchProvider | undefined) => void;
++}) {
++	const id = useId();
++	const inputClassName =
++		"w-full rounded-md border border-border bg-surface-2 px-2 py-1 text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none";
++	return (
++		<div className="space-y-2 rounded-md border border-border p-2">
++			<label htmlFor={`${id}-mode`} className="block text-xs text-text-secondary">
++				Codex provider
++			</label>
++			<NativeSelect
++				id={`${id}-mode`}
++				value={value ? "custom" : "default"}
++				onChange={(event) =>
++					onChange(
++						event.target.value === "custom"
++							? { id: "cliproxy", baseUrl: "", apiKeyEnv: "OPENAI_API_KEY" }
++							: undefined,
++					)
++				}
++			>
++				<option value="default">Use local Codex configuration</option>
++				<option value="custom">Custom provider / CLIProxy</option>
++			</NativeSelect>
++			{value ? (
++				<>
++					<label htmlFor={`${id}-provider`} className="block text-xs text-text-secondary">
++						Provider ID
++					</label>
++					<input
++						id={`${id}-provider`}
++						value={value.id}
++						placeholder="cliproxy"
++						className={inputClassName}
++						onChange={(event) => onChange({ ...value, id: event.target.value })}
++					/>
++					<label htmlFor={`${id}-url`} className="block text-xs text-text-secondary">
++						API base URL
++					</label>
++					<input
++						id={`${id}-url`}
++						value={value.baseUrl}
++						placeholder="http://127.0.0.1:8317/v1"
++						className={inputClassName}
++						onChange={(event) => onChange({ ...value, baseUrl: event.target.value })}
++					/>
++					<label htmlFor={`${id}-key`} className="block text-xs text-text-secondary">
++						API key variable name
++					</label>
++					<input
++						id={`${id}-key`}
++						value={value.apiKeyEnv}
++						placeholder="OPENAI_API_KEY"
++						className={inputClassName}
++						onChange={(event) => onChange({ ...value, apiKeyEnv: event.target.value })}
++					/>
++					<p className="m-0 text-xs text-text-tertiary">
++						Save the key as an encrypted variable below with this exact name. Codex will use this Responses API
++						provider instead of your local default and ChatGPT login. Additional CLI arguments can override these
++						settings. Changes apply when a task starts a new CLI process.
++					</p>
++				</>
++			) : (
++				<p className="m-0 text-xs text-text-tertiary">
++					An API key alone does not switch Codex providers. Select a custom provider to use CLIProxy.
++				</p>
++			)}
++		</div>
++	);
++}
+diff --git a/src/core/cli-arguments.ts b/src/core/cli-arguments.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ea5a7a144466c6a3f35ca0c7088ee921f911783
+--- /dev/null
++++ b/src/core/cli-arguments.ts
+@@ -0,0 +1,101 @@
++import { z } from "zod";
++
++export const cliArgumentsSchema = z
++	.array(
++		z
++			.string()
++			.max(500)
++			.refine((value) => !/[\0\r\n]/.test(value), "CLI arguments cannot contain NUL or newlines"),
++	)
++	.max(100);
++
++export type CliArgumentsInput = { mode: "command" | "lines"; text: string };
++
++// This is intentionally a literal argv tokenizer, not a shell interpreter.
++// General shell parsers expand variables and tolerate some incomplete quotes;
++// neither behavior is suitable for editable launch settings.
++function tokenizeCommandArguments(text: string): string[] {
++	const args: string[] = [];
++	let word = "";
++	let started = false;
++	let quote: "'" | '"' | null = null;
++	for (let i = 0; i < text.length; i++) {
++		const char = text.charAt(i);
++		if (quote === "'") {
++			if (char === "'") quote = null;
++			else word += char;
++			continue;
++		}
++		if (char === "\\") {
++			const next = text[i + 1];
++			if (next === undefined) throw new Error("Finish the escape after the trailing backslash.");
++			if (next === "\n") {
++				i++;
++				continue;
++			}
++			if (quote === '"' && !['"', "\\", "$", "`"].includes(next)) {
++				word += char;
++			} else {
++				word += next;
++				i++;
++			}
++			started = true;
++			continue;
++		}
++		if (quote === '"') {
++			if (char === '"') quote = null;
++			else word += char;
++			continue;
++		}
++		if (char === "'" || char === '"') {
++			quote = char;
++			started = true;
++			continue;
++		}
++		if (/\s/.test(char)) {
++			if (started) args.push(word);
++			word = "";
++			started = false;
++			continue;
++		}
++		if (/[|&;<>`()]/.test(char))
++			throw new Error("Enter arguments only. Quote literal shell operators; shell commands are not supported.");
++		word += char;
++		started = true;
++	}
++	if (quote) throw new Error("Close the quoted CLI argument before saving or starting the task.");
++	if (started) args.push(word);
++	return args;
++}
++
++export function parseCliArguments(input: CliArgumentsInput): string[] {
++	const text = input.text.replaceAll("\r\n", "\n");
++	const args =
++		input.mode === "command" ? tokenizeCommandArguments(text) : text.split("\n").filter((line) => line.length > 0);
++	const result = cliArgumentsSchema.safeParse(args);
++	if (!result.success) throw new Error(result.error.issues[0]?.message ?? "Invalid CLI arguments.");
++	return result.data;
++}
++
++export const cliArgumentsInputSchema = z
++	.object({
++		mode: z.enum(["command", "lines"]),
++		text: z.string().max(60000),
++	})
++	.superRefine((input, ctx) => {
++		try {
++			parseCliArguments(input);
++		} catch (error) {
++			ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid CLI arguments." });
++		}
++	});
++
++export function resolveCliArguments(settings?: { cliArgs?: string[]; cliArgsInput?: CliArgumentsInput }): string[] {
++	return settings?.cliArgsInput ? parseCliArguments(settings.cliArgsInput) : [...(settings?.cliArgs ?? [])];
++}
++
++export function formatCliArguments(args: string[], mode: CliArgumentsInput["mode"]): string {
++	return mode === "lines"
++		? args.join("\n")
++		: args.map((arg) => (/^[A-Za-z0-9_./:@%+=,-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ");
++}
+diff --git a/test/runtime/cli-arguments.test.ts b/test/runtime/cli-arguments.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..dfe38017e22ac8f3ab6cf1e766d8783da0f026c3
+--- /dev/null
++++ b/test/runtime/cli-arguments.test.ts
+@@ -0,0 +1,110 @@
++import { describe, expect, it } from "vitest";
++import {
++	cliArgumentsInputSchema,
++	formatCliArguments,
++	parseCliArguments,
++	resolveCliArguments,
++} from "../../src/core/cli-arguments";
++import { launchProfileSaveSchema } from "../../src/core/launch-profiles";
++import { getTaskOverridesError, taskOverridesSchema } from "../../src/core/task-overrides";
++import { resolveTaskLaunchOverrides } from "../../src/terminal/task-launch-overrides";
++
++const proxyArgs = [
++	"-c",
++	'model_provider="cliproxy"',
++	"-c",
++	'model_providers.cliproxy={ name="CLIProxyAPI", base_url="https://proxy.example/v1", env_key="OPENAI_API_KEY", wire_api="responses", requires_openai_auth=false }',
++	"-c",
++	"model_context_window=272000",
++	"-c",
++	"model_auto_compact_token_limit=240000",
++];
++const command = ` -c 'model_provider="cliproxy"' -c 'model_providers.cliproxy={ name="CLIProxyAPI", base_url="https://proxy.example/v1", env_key="OPENAI_API_KEY", wire_api="responses", requires_openai_auth=false }'  -c 'model_context_window=272000'  -c 'model_auto_compact_token_limit=240000'`;
++
++describe("CLI argument input", () => {
++	it.each([command, command.replaceAll(" -c", "\n-c"), command.replaceAll(" -c", " \\\n-c")])(
++		"parses pasted CLIProxy flags, including TOML quotes and repeated -c flags",
++		(text) => {
++			expect(parseCliArguments({ mode: "command", text })).toEqual(proxyArgs);
++		},
++	);
++
++	it("preserves literal variables, empty values, backticks, escaping, and quote concatenation", () => {
++		const text = [
++			'--key "$API_KEY"',
++			`'\${TOKEN}'`,
++			String.raw`'$(ignored)' '\path' "C:\work" "say \"hi\"" a\ b pre' mid 'post ''`,
++		].join(" ");
++		expect(parseCliArguments({ mode: "command", text })).toEqual([
++			"--key",
++			"$API_KEY",
++			`\${TOKEN}`,
++			"$(ignored)",
++			"\\path",
++			"C:\\work",
++			'say "hi"',
++			"a b",
++			"pre mid post",
++			"",
++		]);
++		const args = ["-c", 'some_text="dollar $HOME and `literal`"', "O'Reilly", "", "spaces around value"];
++		expect(parseCliArguments({ mode: "command", text: formatCliArguments(args, "command") })).toEqual(args);
++	});
++
++	it("keeps legacy argv unchanged and raw line input editable with trailing newlines", () => {
++		const input = { mode: "lines", text: `${proxyArgs.join("\r\n")}\r\n` } as const;
++		expect(cliArgumentsInputSchema.parse(input).text).toBe(input.text);
++		expect(parseCliArguments(input)).toEqual(proxyArgs);
++		expect(resolveCliArguments({ cliArgs: proxyArgs })).toEqual(proxyArgs);
++		expect(resolveCliArguments({ cliArgs: proxyArgs })).not.toBe(proxyArgs);
++	});
++
++	it.each([
++		"-c 'unfinished",
++		'-c "unfinished',
++		"--flag \\",
++		"-c test=true | cat",
++		"$(echo bad)",
++		"`echo bad`",
++		"'a\nb'",
++		"--flag \0",
++		"x".repeat(501),
++		Array(101).fill("x").join(" "),
++	])("rejects malformed command input before saving a task or profile: %j", (text) => {
++		const cliArgsInput = { mode: "command", text } as const;
++		expect(cliArgumentsInputSchema.safeParse(cliArgsInput).success).toBe(false);
++		expect(getTaskOverridesError({ cliArgsInput })).not.toBeNull();
++		expect(
++			launchProfileSaveSchema.safeParse({ name: "Work", cliArgs: [], cliArgsInput, variables: [] }).success,
++		).toBe(false);
++	});
++
++	it("resolves command input from both encrypted profiles and tasks with task precedence", () => {
++		const profile = {
++			id: "work",
++			name: "Work",
++			agentId: "codex" as const,
++			cliArgs: ["ignored-legacy-value"],
++			cliArgsInput: { mode: "command" as const, text: command },
++			variables: [{ name: "OPENAI_API_KEY", value: "test-key" }],
++		};
++		const overrides = taskOverridesSchema.parse({
++			cliArgsInput: { mode: "command", text: "-c model_context_window=300000" },
++		});
++		const restored = taskOverridesSchema.parse(JSON.parse(JSON.stringify(overrides)));
++		const launch = resolveTaskLaunchOverrides("codex", [], restored, profile);
++		expect(launch.args).toEqual([...proxyArgs, "-c", "model_context_window=300000"]);
++		expect(launch.env).toEqual({ OPENAI_API_KEY: "test-key" });
++	});
++
++	it.each(
++		[
++			[command],
++			["-c", 'model_provider="cliproxy"', "model_providers.cliproxy='{ name=\"CLIProxyAPI\" }'"],
++			["-c"],
++			["-c", "--model", "test-model"],
++		].map((cliArgs) => ({ cliArgs })),
++	)("rejects malformed legacy Codex config arguments before spawning: %j", ({ cliArgs }) => {
++		expect(() => resolveTaskLaunchOverrides("codex", [], { cliArgs })).toThrow(/Codex/);
++	});
++});
+diff --git a/web-ui/src/components/cli-arguments-editor.tsx b/web-ui/src/components/cli-arguments-editor.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..01bcbee35b2386bff34d7970af71d67fdde7a180
+--- /dev/null
++++ b/web-ui/src/components/cli-arguments-editor.tsx
+@@ -0,0 +1,76 @@
++import { type CliArgumentsInput, formatCliArguments, parseCliArguments } from "@runtime-cli-arguments";
++import { useId } from "react";
++import { NativeSelect } from "@/components/ui/native-select";
++
++export function CliArgumentsEditor({
++	input,
++	args = [],
++	onChange,
++	label = "CLI arguments",
++}: {
++	input?: CliArgumentsInput;
++	args?: string[];
++	onChange: (input: CliArgumentsInput) => void;
++	label?: string;
++}) {
++	const id = useId();
++	const value: CliArgumentsInput = input ?? { mode: args.length ? "lines" : "command", text: args.join("\n") };
++	let parsed: string[] | null = null;
++	let error: string | null = null;
++	try {
++		parsed = parseCliArguments(value);
++	} catch (cause) {
++		error = cause instanceof Error ? cause.message : "Invalid CLI arguments.";
++	}
++	return (
++		<div className="space-y-1">
++			<div className="flex flex-wrap items-center justify-between gap-2">
++				<label htmlFor={id} className="text-xs text-text-secondary">
++					{label}
++				</label>
++				<NativeSelect
++					size="sm"
++					aria-label={`${label} format`}
++					value={value.mode}
++					onChange={(event) => {
++						const mode = event.target.value === "lines" ? "lines" : "command";
++						if (mode === "lines" && parsed?.includes("")) return;
++						onChange({ mode, text: parsed ? formatCliArguments(parsed, mode) : value.text });
++					}}
++				>
++					<option value="command">Command line</option>
++					<option value="lines" disabled={parsed?.includes("")}>
++						One argument per line
++					</option>
++				</NativeSelect>
++			</div>
++			<textarea
++				id={id}
++				value={value.text}
++				rows={3}
++				spellCheck={false}
++				onChange={(event) => onChange({ ...value, text: event.target.value })}
++				placeholder={
++					value.mode === "command"
++						? `-c 'model_provider="cliproxy"' -c 'model_context_window=272000'`
++						: '-c\nmodel_provider="cliproxy"'
++				}
++				aria-invalid={Boolean(error)}
++				aria-describedby={`${id}-help`}
++				className="w-full resize-y rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
++			/>
++			<p id={`${id}-help`} className="m-0 text-xs text-text-tertiary">
++				{value.mode === "command"
++					? "Paste arguments as in a terminal, without the codex/claude command. Quotes group values; variables are kept literal and no shell commands run."
++					: "Each line is one argument. Put each -c on its own line, followed by its value. To paste a whole command's arguments, select Command line first."}
++			</p>
++			{error ? (
++				<p role="alert" className="m-0 text-xs text-status-red">
++					{error}
++				</p>
++			) : (
++				<p className="m-0 text-xs text-text-tertiary">{parsed?.length ?? 0} arguments</p>
++			)}
++		</div>
++	);
++}
+diff --git a/web-ui/src/components/cli-arguments-editor.test.tsx b/web-ui/src/components/cli-arguments-editor.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5c759338e9c5b83b097e9df624d62cd57cab269
+--- /dev/null
++++ b/web-ui/src/components/cli-arguments-editor.test.tsx
+@@ -0,0 +1,87 @@
++import { type CliArgumentsInput, parseCliArguments } from "@runtime-cli-arguments";
++import { act, useState } from "react";
++import { createRoot, type Root } from "react-dom/client";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { CliArgumentsEditor } from "@/components/cli-arguments-editor";
++
++describe("CLI argument editing", () => {
++	let container: HTMLDivElement;
++	let root: Root;
++	const changed = vi.fn<(input: CliArgumentsInput) => void>();
++	function Editor({ args }: { args?: string[] }) {
++		const [input, setInput] = useState<CliArgumentsInput>();
++		return (
++			<CliArgumentsEditor
++				args={args}
++				input={input}
++				onChange={(next) => {
++					changed(next);
++					setInput(next);
++				}}
++			/>
++		);
++	}
++	beforeEach(() => {
++		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
++		changed.mockClear();
++		container = document.createElement("div");
++		document.body.append(container);
++		root = createRoot(container);
++	});
++	afterEach(() => {
++		act(() => root.unmount());
++		container.remove();
++		vi.unstubAllGlobals();
++	});
++	function setText(text: string) {
++		const textarea = container.querySelector("textarea");
++		act(() => {
++			Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, text);
++			textarea?.dispatchEvent(new Event("input", { bubbles: true }));
++		});
++	}
++	function selectMode(mode: string) {
++		const select = container.querySelector("select");
++		if (!select) throw new Error("Missing format selector");
++		act(() => {
++			select.value = mode;
++			select.dispatchEvent(new Event("change", { bubbles: true }));
++		});
++	}
++
++	it("accepts pasted -c flags as one command, preserving TOML quoting when changing formats", () => {
++		act(() => root.render(<Editor />));
++		const text = `-c 'model_provider="cliproxy"' -c 'model_providers.cliproxy={ name="CLIProxyAPI", base_url="https://proxy.example/v1" }' -c model_context_window=272000 -c model_auto_compact_token_limit=240000`;
++		setText(text);
++		expect(container.querySelector("textarea")?.value).toBe(text);
++		expect(container.textContent).toContain("8 arguments");
++		const commandInput = changed.mock.lastCall?.[0];
++		expect(commandInput).toEqual({ mode: "command", text });
++		selectMode("lines");
++		const linesInput = changed.mock.lastCall?.[0];
++		expect(linesInput?.text.split("\n")).toHaveLength(8);
++		selectMode("command");
++		const restored = changed.mock.lastCall?.[0];
++		if (!commandInput || !restored) throw new Error("Missing editor output");
++		expect(parseCliArguments(restored)).toEqual(parseCliArguments(commandInput));
++	});
++
++	it("keeps legacy arguments in line mode and preserves Enter while typing", () => {
++		act(() => root.render(<Editor args={["-c", 'model_provider="cliproxy"']} />));
++		expect(container.querySelector("select")?.value).toBe("lines");
++		setText('-c\nmodel_provider="cliproxy"\n');
++		expect(container.querySelector("textarea")?.value).toBe('-c\nmodel_provider="cliproxy"\n');
++		setText('-c\nmodel_provider="cliproxy"\n-c\nmodel_context_window=272000');
++		expect(container.textContent).toContain("4 arguments");
++	});
++
++	it("retains incomplete quotes for editing and reports the error until corrected", () => {
++		act(() => root.render(<Editor />));
++		setText("-c 'model_provider=");
++		expect(container.querySelector("textarea")?.value).toBe("-c 'model_provider=");
++		expect(container.querySelector('[role="alert"]')?.textContent).toContain("Close the quoted");
++		setText(`-c 'model_provider="cliproxy"'`);
++		expect(container.querySelector('[role="alert"]')).toBeNull();
++		expect(container.textContent).toContain("2 arguments");
 +	});
 +});

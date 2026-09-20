@@ -9,10 +9,30 @@
 - 環境變數與模型可在 Backlog 任務的編輯表單修改，下次啟動生效；自動重啟與從 Done 還原時也會帶入。原生 Cline SDK 不使用 CLI 環境變數設定。
 - 環境變數會以**未加密文字**儲存在任務資料中；密碼欄只隱藏畫面顯示。不要把含機密的任務資料分享出去。
 - Settings 的 **Launch profiles** 可預先保存環境變數與 CLI 參數；值使用 AES-256-GCM 加密，macOS 優先把金鑰放在 Keychain，設定頁與 task 表單只顯示變數是否已設定，不回傳 secret。啟動 task 時 profile 變數先套用，task 變數後套用，因此 task 可以覆蓋 profile。
-- CLI 參數可以在 profile 或 task 的 Additional CLI arguments 中逐行輸入，例如 Codex 的 `-c` 與 `model_context_window=100000`；程式會以 argv 傳入，不經 shell 展開。
+- Profile 與 task 的 CLI arguments 欄位提供 **Command line** 與 **One argument per line** 兩種格式。Command line 可以直接貼 `-c 'model_provider="cliproxy"' -c 'model_context_window=272000'`，不要包含開頭的 `codex`。支援引號分組、跳脫與換行續接，保留 `$VAR` 原文，不執行 shell 指令。舊設定維持逐行格式，每個 `-c` 和它的值各佔一行；TOML 本身的雙引號不會被移除。畫面顯示解析後參數數量，未關閉引號會阻止儲存或建立 task。
+- Codex profile 可選 **Custom provider / CLIProxy**，明確覆蓋 `model_provider`、API base URL 與 API key 變數。只設定 `OPENAI_API_KEY` 不會自動把本機 `openai` provider 切到 proxy；環境變數與 provider 設定是不同項目。
 - 新增 task 時若 prompt 留白直接按 **Start**，會建立 **New task** 卡片與自己的 worktree，並直接開啟 task 詳細頁的 Codex／Claude CLI；不送出 prompt、附件或 `/plan` 指令，可先用 `/model` 調整模型再開始對話。卡片可重新命名，profile、環境變數與 CLI 參數照常套用；重新整理後仍會保留卡片。輸入 prompt 時維持原本 Start／Start and open 的流程。
 - 每一欄的卡片都可用鉛筆改名、標籤按鈕新增／移除 label。改名不改 prompt。
 - 卡片模型優先顯示執行階段回報（Codex `turn_context`、Claude 主 session 的 assistant transcript），其次顯示啟動時指定的模型。CLI 尚未回報預設模型時顯示 `CLI default (not reported)`。更換 CLI 內模型後，下一次相關記錄／hook 回報會更新；顯示不保證涵蓋 CLI 自己啟動的子代理模型。
+
+### 設定 Codex 使用 CLIProxy
+
+1. 在 **Settings → Launch profiles** 編輯既有 profile，Agent 選 **OpenAI Codex**（或 All agents）。
+2. **Codex provider** 選 **Custom provider / CLIProxy**，Provider ID 填 `cliproxy`，API base URL 填你的 proxy 位址，例如 `http://127.0.0.1:8317/v1`。此欄直接填 URL，不使用 `$VAR`。
+3. **API key variable name** 填 `OPENAI_API_KEY`，在下方環境變數中使用相同名稱保存 proxy 的 key。已保存的 key 留白即可保留，不用再貼一次。
+4. 儲存後建立新 task，選用該 profile。Codex 的 `/status` 應顯示 `Model provider: cliproxy`。已在執行的 CLI 不會因修改 profile 立即換 provider。
+
+啟動時以 Codex `-c` 參數指定 Responses API provider、`env_key` 與 `requires_openai_auth=false`，只透過環境變數傳入 key；不修改 `~/.codex/config.toml` 或 `auth.json`。缺少 profile/task 指定的 key 時會回報錯誤。自訂 provider 欄位會覆蓋本機預設；profile 的額外 CLI 參數可再覆蓋這些欄位，task 額外參數最後套用。若仍指定了 `model_provider="openai"` 等舊參數，請先移除。
+
+舊 profile 會保留原行為；若要使用專用 provider 欄位，需明確選用 custom provider。Provider ID、URL 與 key 的變數名稱會顯示於設定頁，只有變數的值不回傳；不要把 key 放進 URL 或 CLI 參數。相關 Codex 設定見 [官方 provider 文件](https://developers.openai.com/codex/config-advanced#custom-model-providers)。
+
+也可完全透過 CLI 參數設定 provider，不必使用上面的 custom provider 欄位。將 **CLI arguments format** 改成 **Command line**，清除舊內容，再貼上以下參數（URL 換成你的 proxy 位址）；應顯示 **8 arguments**：
+
+```sh
+-c 'model_provider="cliproxy"' -c 'model_providers.cliproxy={ name="CLIProxyAPI", base_url="https://proxy.example/v1", env_key="OPENAI_API_KEY", wire_api="responses", requires_openai_auth=false }' -c 'model_context_window=272000' -c 'model_auto_compact_token_limit=240000'
+```
+
+若看到 `unexpected argument 'model_providers...'`，代表設定字串沒有正確接到 `-c`；這通常是把 shell 指令格式貼進逐行欄位，或漏掉某個 `-c`。新版會在啟動前回報可修正的錯誤。舊的逐行參數不會被自動重新解讀，請切換格式後重新貼上原文。
 
 ## 執行這份修改
 

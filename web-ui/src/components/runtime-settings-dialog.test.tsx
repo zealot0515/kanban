@@ -75,6 +75,7 @@ vi.mock("@radix-ui/react-select", () => ({
 }));
 
 const resetLayoutCustomizationsMock = vi.hoisted(() => vi.fn());
+const saveRuntimeConfigMock = vi.hoisted(() => vi.fn(async () => true));
 const clineSetupSectionOnSavedRef = vi.hoisted(() => ({
 	onSaved: null as null | (() => void),
 }));
@@ -142,7 +143,7 @@ vi.mock("@/runtime/use-runtime-config", () => ({
 		isLoading: false,
 		isSaving: false,
 		refresh: vi.fn(),
-		save: vi.fn(async () => true),
+		save: saveRuntimeConfigMock,
 	}),
 }));
 
@@ -217,6 +218,7 @@ describe("RuntimeSettingsDialog", () => {
 
 	beforeEach(() => {
 		resetLayoutCustomizationsMock.mockReset();
+		saveRuntimeConfigMock.mockClear();
 		clineSetupSectionOnSavedRef.onSaved = null;
 		window.localStorage.clear();
 		document.documentElement.removeAttribute("data-theme");
@@ -242,6 +244,173 @@ describe("RuntimeSettingsDialog", () => {
 			(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
 				previousActEnvironment;
 		}
+	});
+
+	it("adds CLIProxy routing to a saved profile while preserving its encrypted key", async () => {
+		await act(async () => {
+			root.render(
+				<RuntimeSettingsDialog
+					open
+					workspaceId="workspace-1"
+					onOpenChange={() => {}}
+					initialConfig={{
+						...savedClineOauthConfig,
+						launchProfiles: [
+							{
+								id: "work",
+								name: "Work proxy",
+								agentId: "codex",
+								cliArgs: [],
+								variables: [{ name: "OPENAI_API_KEY", configured: true }],
+							},
+						],
+					}}
+				/>,
+			);
+		});
+		const providerLabel = Array.from(document.querySelectorAll("label")).find(
+			(label) => label.textContent === "Codex provider",
+		);
+		const providerSelect = document.getElementById(providerLabel?.htmlFor ?? "") as HTMLSelectElement;
+		expect(providerSelect.value).toBe("default");
+		await act(async () => {
+			providerSelect.value = "custom";
+			providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		await act(async () => {
+			findButtonByText(document.body, "Save")?.click();
+		});
+		expect(saveRuntimeConfigMock).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain("Enter an HTTP(S) API base URL");
+		const urlLabel = Array.from(document.querySelectorAll("label")).find(
+			(label) => label.textContent === "API base URL",
+		);
+		const urlInput = document.getElementById(urlLabel?.htmlFor ?? "") as HTMLInputElement;
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+				urlInput,
+				"http://127.0.0.1:8317/v1",
+			);
+			urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		await act(async () => {
+			findButtonByText(document.body, "Save")?.click();
+		});
+		expect(saveRuntimeConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				launchProfiles: [
+					{
+						id: "work",
+						name: "Work proxy",
+						agentId: "codex",
+						cliArgs: [],
+						codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
+						variables: [{ name: "OPENAI_API_KEY", value: undefined }],
+					},
+				],
+			}),
+		);
+	});
+
+	it("loads saved provider routing and lets the user switch back to local Codex settings", async () => {
+		await act(async () => {
+			root.render(
+				<RuntimeSettingsDialog
+					open
+					workspaceId="workspace-1"
+					onOpenChange={() => {}}
+					initialConfig={{
+						...savedClineOauthConfig,
+						launchProfiles: [
+							{
+								id: "work",
+								name: "Work proxy",
+								agentId: "codex",
+								cliArgs: [],
+								variables: [],
+								codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "PROXY_KEY" },
+							},
+						],
+					}}
+				/>,
+			);
+		});
+		const providerLabel = Array.from(document.querySelectorAll("label")).find(
+			(label) => label.textContent === "Codex provider",
+		);
+		const providerSelect = document.getElementById(providerLabel?.htmlFor ?? "") as HTMLSelectElement;
+		expect(providerSelect.value).toBe("custom");
+		expect(document.querySelector<HTMLInputElement>('input[placeholder="OPENAI_API_KEY"]')?.value).toBe("PROXY_KEY");
+		await act(async () => {
+			providerSelect.value = "default";
+			providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		await act(async () => {
+			findButtonByText(document.body, "Save")?.click();
+		});
+		expect(saveRuntimeConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				launchProfiles: [expect.objectContaining({ id: "work", codexProvider: undefined })],
+			}),
+		);
+	});
+
+	it("saves pasted command arguments and rejects unfinished quotes without losing the saved key", async () => {
+		await act(async () => {
+			root.render(
+				<RuntimeSettingsDialog
+					open
+					workspaceId="workspace-1"
+					onOpenChange={() => {}}
+					initialConfig={{
+						...savedClineOauthConfig,
+						launchProfiles: [
+							{
+								id: "work",
+								name: "Work",
+								agentId: "codex",
+								cliArgs: ["-c", 'model_provider="cliproxy"'],
+								variables: [{ name: "OPENAI_API_KEY", configured: true }],
+							},
+						],
+					}}
+				/>,
+			);
+		});
+		const select = document.querySelector<HTMLSelectElement>('[aria-label="CLI arguments format"]');
+		if (!select) throw new Error("Missing argument format selector");
+		await act(async () => {
+			select.value = "command";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		const label = Array.from(document.querySelectorAll("label")).find((item) => item.textContent === "CLI arguments");
+		const textarea = document.getElementById(label?.htmlFor ?? "") as HTMLTextAreaElement;
+		const setText = (text: string) => {
+			Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, text);
+			textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		};
+		await act(async () => setText("-c 'model_provider="));
+		await act(async () => {
+			findButtonByText(document.body, "Save")?.click();
+		});
+		expect(saveRuntimeConfigMock).not.toHaveBeenCalled();
+		const text = `-c 'model_provider="cliproxy"' -c model_context_window=272000`;
+		await act(async () => setText(text));
+		await act(async () => {
+			findButtonByText(document.body, "Save")?.click();
+		});
+		expect(saveRuntimeConfigMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				launchProfiles: [
+					expect.objectContaining({
+						id: "work",
+						cliArgs: [],
+						cliArgsInput: { mode: "command", text },
+						variables: [{ name: "OPENAI_API_KEY", value: undefined }],
+					}),
+				],
+			}),
+		);
 	});
 
 	it("does not render support actions inside settings", async () => {

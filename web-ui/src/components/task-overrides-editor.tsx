@@ -2,6 +2,7 @@ import * as Switch from "@radix-ui/react-switch";
 import { getTaskOverridesError } from "@runtime-task-state";
 import { Plus, X } from "lucide-react";
 import { useId, useState } from "react";
+import { CliArgumentsEditor } from "@/components/cli-arguments-editor";
 import { TaskLabelsEditor } from "@/components/task-labels-editor";
 import { Button } from "@/components/ui/button";
 import type { LaunchProfileSummary, RuntimeAgentId, TaskOverrides } from "@/runtime/types";
@@ -21,6 +22,7 @@ export function TaskOverridesEditor({
 	const [showValues, setShowValues] = useState(false);
 	const environment = value.environment ?? { enabled: false, variables: [] };
 	const error = getTaskOverridesError(value);
+	const selectedProfile = launchProfiles.find((profile) => profile.id === value.launchProfileId);
 	const updateVariables = (variables: typeof environment.variables) =>
 		onChange({ ...value, environment: { ...environment, variables } });
 	return (
@@ -52,7 +54,9 @@ export function TaskOverridesEditor({
 							))}
 					</select>
 					<p className="text-xs text-text-tertiary">
-						Applies encrypted variables and saved CLI arguments when this task starts.
+						{agentId === "codex" && selectedProfile?.codexProvider
+							? `Provider: ${selectedProfile.codexProvider.id} · ${selectedProfile.codexProvider.baseUrl}`
+							: "Applies encrypted variables and saved CLI arguments when this task starts."}
 					</p>
 				</div>
 			) : null}
@@ -152,25 +156,12 @@ export function TaskOverridesEditor({
 				</div>
 			) : null}
 			{agentId && agentId !== "cline" ? (
-				<div className="space-y-1">
-					<label htmlFor={`${id}-args`} className="block text-xs text-text-secondary">
-						Additional CLI arguments
-					</label>
-					<textarea
-						id={`${id}-args`}
-						value={(value.cliArgs ?? []).join("\n")}
-						rows={2}
-						placeholder={"One argument per line, e.g.\n-c\nmodel_context_window=100000"}
-						onChange={(event) => {
-							const cliArgs = event.target.value.split("\n").filter((arg) => arg.length > 0);
-							onChange({ ...value, cliArgs: cliArgs.length > 0 ? cliArgs : undefined });
-						}}
-						className="w-full resize-y rounded-md border border-border-bright bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary focus:outline-border-focus"
-					/>
-					<p className="text-xs text-text-tertiary">
-						Each line is one argument; no shell quoting or expansion is performed.
-					</p>
-				</div>
+				<CliArgumentsEditor
+					label="Additional CLI arguments"
+					input={value.cliArgsInput}
+					args={value.cliArgs}
+					onChange={(cliArgsInput) => onChange({ ...value, cliArgs: undefined, cliArgsInput })}
+				/>
 			) : null}
 			{error ? (
 				<p role="alert" className="text-xs text-status-red">

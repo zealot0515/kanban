@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cliArgumentsInputSchema, cliArgumentsSchema } from "./cli-arguments";
 
 export const taskOverridesSchema = z.object({
 	labels: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
@@ -14,15 +15,8 @@ export const taskOverridesSchema = z.object({
 		.max(80)
 		.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid launch profile ID")
 		.optional(),
-	cliArgs: z
-		.array(
-			z
-				.string()
-				.max(500)
-				.refine((value) => !/[\0\r\n]/.test(value), "CLI arguments cannot contain NUL or newlines"),
-		)
-		.max(100)
-		.optional(),
+	cliArgs: cliArgumentsSchema.optional(),
+	cliArgsInput: cliArgumentsInputSchema.optional(),
 	environment: z
 		.object({
 			enabled: z.boolean(),

@@ -4,6 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeConfigState } from "../../../src/config/runtime-config";
 import type { RuntimeTaskSessionSummary } from "../../../src/core/api-contract";
+import type { StoredLaunchProfile } from "../../../src/core/launch-profiles";
+
+const launchProfileMocks = vi.hoisted(() => ({
+	resolveLaunchProfile: vi.fn<(id: string | undefined) => Promise<StoredLaunchProfile | null>>(),
+}));
+
+vi.mock("../../../src/config/launch-profiles", () => ({
+	resolveLaunchProfile: launchProfileMocks.resolveLaunchProfile,
+	loadLaunchProfileSummaries: vi.fn(async () => []),
+	saveLaunchProfiles: vi.fn(async () => []),
+}));
 
 const agentRegistryMocks = vi.hoisted(() => ({
 	resolveAgentCommand: vi.fn(),
@@ -256,6 +267,7 @@ describe("createRuntimeApi startTaskSession", () => {
 	let mcpOauthSettingsPath = "";
 
 	beforeEach(() => {
+		launchProfileMocks.resolveLaunchProfile.mockReset().mockResolvedValue(null);
 		mcpSettingsPath = `/tmp/kanban-mcp-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
 		mcpOauthSettingsPath = `/tmp/kanban-mcp-oauth-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
 		process.env.CLINE_MCP_SETTINGS_PATH = mcpSettingsPath;
@@ -446,6 +458,54 @@ describe("createRuntimeApi startTaskSession", () => {
 			}),
 		);
 	});
+
+	it.each(["", "Hello"])(
+		"applies encrypted CLIProxy profiles when starting a Codex task (prompt: %j)",
+		async (prompt) => {
+			launchProfileMocks.resolveLaunchProfile.mockResolvedValue({
+				id: "work",
+				name: "Work proxy",
+				agentId: "codex",
+				cliArgs: [],
+				codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
+				variables: [{ name: "OPENAI_API_KEY", value: "stored-proxy-key" }],
+			});
+			agentRegistryMocks.resolveAgentCommand.mockReturnValue({ agentId: "codex", binary: "codex", args: [] });
+			taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/proxy-worktree");
+			const terminalManager = { startTaskSession: vi.fn(async () => createSummary()), applyTurnCheckpoint: vi.fn() };
+			const api = createTestRuntimeApi({
+				getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+				loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+				setActiveRuntimeConfig: vi.fn(),
+				getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+				getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+				resolveInteractiveShellCommand: vi.fn(),
+				runCommand: vi.fn(),
+			});
+			const result = await api.startTaskSession(
+				{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+				{
+					taskId: "task-proxy",
+					agentId: "codex",
+					prompt,
+					baseRef: "main",
+					taskOverrides: { launchProfileId: "work" },
+				},
+			);
+			expect(result.ok).toBe(true);
+			expect(launchProfileMocks.resolveLaunchProfile).toHaveBeenCalledWith("work");
+			expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
+				expect.objectContaining({
+					prompt,
+					env: { OPENAI_API_KEY: "stored-proxy-key" },
+					args: expect.arrayContaining([
+						'model_provider="cliproxy"',
+						"model_providers.cliproxy.requires_openai_auth=false",
+					]),
+				}),
+			);
+		},
+	);
 
 	it("starts an empty CLI task in its worktree using the task-session API", async () => {
 		agentRegistryMocks.resolveAgentCommand.mockReturnValue({

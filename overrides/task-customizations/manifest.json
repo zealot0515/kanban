@@ -45,6 +45,16 @@
     "web-ui/src/hooks/use-task-start-actions.ts",
     "web-ui/src/hooks/use-task-sessions.test.tsx",
     "web-ui/src/components/task-create-dialog.test.tsx",
-    "test/runtime/terminal/agent-session-adapters.test.ts"
+    "test/runtime/terminal/agent-session-adapters.test.ts",
+    "src/terminal/codex-launch-provider.ts",
+    "web-ui/src/components/codex-launch-provider-editor.tsx",
+    "web-ui/src/components/runtime-settings-dialog.test.tsx",
+    "web-ui/tsconfig.json",
+    "web-ui/vite.config.ts",
+    "web-ui/vitest.config.ts",
+    "src/core/cli-arguments.ts",
+    "test/runtime/cli-arguments.test.ts",
+    "web-ui/src/components/cli-arguments-editor.tsx",
+    "web-ui/src/components/cli-arguments-editor.test.tsx"
   ]
 }

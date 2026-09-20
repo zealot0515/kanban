@@ -1,6 +1,8 @@
 import type { RuntimeAgentId } from "../core/api-contract";
+import { resolveCliArguments } from "../core/cli-arguments";
 import type { StoredLaunchProfile } from "../core/launch-profiles";
 import { type TaskOverrides, taskOverridesSchema } from "../core/task-overrides";
+import { buildCodexProviderArgs, validateCodexConfigArgs } from "./codex-launch-provider";
 
 /** Keep launch overrides in argv/env; never interpolate them into shell commands. */
 export function resolveTaskLaunchOverrides(
@@ -16,7 +18,15 @@ export function resolveTaskLaunchOverrides(
 	const cliModel = settings?.cliModel?.trim();
 	const supportsModel = agentId === "codex" || agentId === "claude";
 	const nextArgs: string[] = [];
-	const configuredArgs = [...(profile?.cliArgs ?? []), ...(settings?.cliArgs ?? []), ...args];
+	const providerArgs =
+		agentId === "codex" && profile?.codexProvider ? buildCodexProviderArgs(profile.codexProvider) : [];
+	const configuredArgs = [
+		...args,
+		...providerArgs,
+		...resolveCliArguments(profile ?? undefined),
+		...resolveCliArguments(settings),
+	];
+	if (agentId === "codex") validateCodexConfigArgs(configuredArgs);
 	for (let index = 0; index < configuredArgs.length; index++) {
 		const arg = configuredArgs[index];
 		if (supportsModel && cliModel) {
@@ -39,6 +49,11 @@ export function resolveTaskLaunchOverrides(
 		Object.keys(profileEnvironment).length > 0 || Object.keys(taskEnvironment).length > 0
 			? { ...profileEnvironment, ...taskEnvironment }
 			: undefined;
+	if (agentId === "codex" && profile?.codexProvider && !environment?.[profile.codexProvider.apiKeyEnv]?.trim()) {
+		throw new Error(
+			`Launch profile "${profile.name}" needs ${profile.codexProvider.apiKeyEnv}. Add its API key to the profile's encrypted environment variables or this task's environment variables.`,
+		);
+	}
 	let modelId: string | null = null;
 	if (supportsModel) {
 		for (let index = 0; index < nextArgs.length; index++) {

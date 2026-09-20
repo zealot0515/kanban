@@ -97,10 +97,62 @@ describe("task overrides", () => {
 				profile,
 			),
 		).toEqual({
-			args: ["-c", "profile_setting=true", "-c", "task_setting=true", "--model", "default"],
+			args: ["--model", "default", "-c", "profile_setting=true", "-c", "task_setting=true"],
 			env: { OPENAI_API_KEY: "task-key" },
 			modelId: "default",
 		});
+	});
+
+	it("overrides the local Codex provider with CLIProxy and passes its key only through env", () => {
+		const profile: StoredLaunchProfile = {
+			id: "proxy",
+			name: "Work proxy",
+			agentId: "codex",
+			codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
+			cliArgs: ["-c", "model_context_window=100000"],
+			variables: [{ name: "OPENAI_API_KEY", value: "encrypted-profile-key" }],
+		};
+		const result = resolveTaskLaunchOverrides("codex", ["-c", 'model_provider="openai"'], undefined, profile);
+		expect(result.args).toEqual([
+			"-c",
+			'model_provider="openai"',
+			"-c",
+			'model_provider="cliproxy"',
+			"-c",
+			'model_providers.cliproxy.name="cliproxy"',
+			"-c",
+			'model_providers.cliproxy.base_url="http://127.0.0.1:8317/v1"',
+			"-c",
+			'model_providers.cliproxy.wire_api="responses"',
+			"-c",
+			'model_providers.cliproxy.env_key="OPENAI_API_KEY"',
+			"-c",
+			"model_providers.cliproxy.requires_openai_auth=false",
+			"-c",
+			"model_context_window=100000",
+		]);
+		expect(result.env).toEqual({ OPENAI_API_KEY: "encrypted-profile-key" });
+		expect(result.args.join(" ")).not.toContain("encrypted-profile-key");
+		expect(
+			resolveTaskLaunchOverrides(
+				"codex",
+				[],
+				{
+					cliArgs: ["-c", 'model_provider="task-proxy"'],
+					environment: { enabled: true, variables: [{ name: "OPENAI_API_KEY", value: "task-key" }] },
+				},
+				profile,
+			),
+		).toMatchObject({
+			env: { OPENAI_API_KEY: "task-key" },
+			args: expect.arrayContaining(['model_provider="task-proxy"']),
+		});
+		expect(resolveTaskLaunchOverrides("claude", [], undefined, { ...profile, agentId: null }).args).toEqual(
+			profile.cliArgs,
+		);
+		expect(() => resolveTaskLaunchOverrides("codex", [], undefined, { ...profile, variables: [] })).toThrow(
+			"needs OPENAI_API_KEY",
+		);
 	});
 
 	it("does not apply CLI settings to the native Cline SDK", () => {

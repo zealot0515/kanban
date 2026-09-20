@@ -6,6 +6,7 @@ import * as RadixPopover from "@radix-ui/react-popover";
 import * as RadixSelect from "@radix-ui/react-select";
 import * as RadixSwitch from "@radix-ui/react-switch";
 import { getRuntimeAgentCatalogEntry, getRuntimeLaunchSupportedAgentCatalog } from "@runtime-agent-catalog";
+import { launchProfileSaveSchema } from "@runtime-launch-profiles";
 import { areRuntimeProjectShortcutsEqual } from "@runtime-shortcuts";
 import {
 	Bell,
@@ -25,6 +26,8 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CliArgumentsEditor } from "@/components/cli-arguments-editor";
+import { CodexLaunchProviderEditor } from "@/components/codex-launch-provider-editor";
 import { AccountOrganizationSection } from "@/components/shared/account-organization-section";
 import { ClineSetupSection } from "@/components/shared/cline-setup-section";
 import {
@@ -98,6 +101,8 @@ function launchProfileDraftFromSummary(profile: LaunchProfileSummary): LaunchPro
 		name: profile.name,
 		agentId: profile.agentId,
 		cliArgs: [...profile.cliArgs],
+		cliArgsInput: profile.cliArgsInput ? { ...profile.cliArgsInput } : undefined,
+		codexProvider: profile.codexProvider ? { ...profile.codexProvider } : undefined,
 		variables: profile.variables.map((variable) => ({
 			name: variable.name,
 			value: "",
@@ -119,6 +124,8 @@ type LaunchProfileDraft = {
 	name: string;
 	agentId: RuntimeAgentId | null;
 	cliArgs: string[];
+	cliArgsInput?: LaunchProfileSummary["cliArgsInput"];
+	codexProvider?: LaunchProfileSummary["codexProvider"];
 	variables: Array<{ name: string; value: string; configured: boolean }>;
 };
 
@@ -754,6 +761,8 @@ export function RuntimeSettingsDialog({
 			name: profile.name.trim(),
 			agentId: profile.agentId,
 			cliArgs: profile.cliArgs,
+			cliArgsInput: profile.cliArgsInput,
+			codexProvider: profile.codexProvider,
 			variables: profile.variables
 				.filter((variable) => variable.name.trim().length > 0)
 				.map((variable) => ({
@@ -761,6 +770,11 @@ export function RuntimeSettingsDialog({
 					value: variable.configured && variable.value.length === 0 ? undefined : variable.value,
 				})),
 		}));
+		const validatedProfiles = launchProfileSaveSchema.array().max(50).safeParse(launchProfilePayload);
+		if (!validatedProfiles.success) {
+			setSaveError(validatedProfiles.error.issues[0]?.message ?? "Check your launch profile settings.");
+			return;
+		}
 		const saved = await save({
 			selectedAgentId,
 			agentAutonomousModeEnabled,
@@ -768,7 +782,7 @@ export function RuntimeSettingsDialog({
 			shortcuts,
 			commitPromptTemplate,
 			openPrPromptTemplate,
-			launchProfiles: launchProfilePayload,
+			launchProfiles: validatedProfiles.data,
 		});
 		if (!saved) {
 			setSaveError("Could not save runtime settings. Check runtime logs and try again.");
@@ -913,7 +927,7 @@ export function RuntimeSettingsDialog({
 					<div className="rounded-lg border border-border bg-surface-0 px-4 py-3 mb-4">
 						<p className="text-text-secondary text-[13px] mt-0 mb-3">
 							Save encrypted environment variables and CLI arguments, then select a profile when starting a task.
-							Values are never returned to the browser after they are saved.
+							Environment variable values are never returned to the browser after they are saved.
 						</p>
 						<div className="flex justify-end mb-2">
 							<Button
@@ -971,16 +985,18 @@ export function RuntimeSettingsDialog({
 											}
 										/>
 									</div>
-									<textarea
-										value={profile.cliArgs.join("\n")}
-										rows={2}
-										placeholder={"CLI arguments, one per line, e.g.\n-c\nmodel_context_window=100000"}
-										onChange={(event) =>
-											updateLaunchProfile(profileIndex, {
-												cliArgs: event.target.value.split("\n").filter((arg) => arg.length > 0),
-											})
+									{profile.agentId === null || profile.agentId === "codex" ? (
+										<CodexLaunchProviderEditor
+											value={profile.codexProvider}
+											onChange={(codexProvider) => updateLaunchProfile(profileIndex, { codexProvider })}
+										/>
+									) : null}
+									<CliArgumentsEditor
+										input={profile.cliArgsInput}
+										args={profile.cliArgs}
+										onChange={(cliArgsInput) =>
+											updateLaunchProfile(profileIndex, { cliArgs: [], cliArgsInput })
 										}
-										className="w-full resize-y rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
 									/>
 									<div className="space-y-1">
 										{profile.variables.map((variable, variableIndex) => (
