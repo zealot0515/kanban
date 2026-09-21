@@ -733,6 +733,21 @@ function shouldInspectCodexOutputForTransition(summary: RuntimeTaskSessionSummar
 	);
 }
 
+function isCodexManualApprovalPending(summary: RuntimeTaskSessionSummary): boolean {
+	return (
+		shouldInspectCodexOutputForTransition(summary) &&
+		summary.latestHookActivity?.hookEventName?.toLowerCase() === "permissionrequest" &&
+		summary.latestHookActivity.activityText === "Waiting for approval"
+	);
+}
+
+function codexApprovalResponseDetector(
+	data: string,
+	summary: RuntimeTaskSessionSummary,
+): SessionTransitionEvent | null {
+	return isCodexManualApprovalPending(summary) ? codexPromptDetector(data, summary) : null;
+}
+
 const codexAdapter: AgentSessionAdapter = {
 	async prepare(input) {
 		const codexArgs = [...input.args];
@@ -788,8 +803,10 @@ const codexAdapter: AgentSessionAdapter = {
 				args: codexArgs,
 				env,
 				deferredStartupInput,
-				detectOutputTransition: codexPromptDetector,
-				shouldInspectOutputForTransition: shouldInspectCodexOutputForTransition,
+				// Only a pending human approval may resume on Enter plus a prompt repaint.
+				// An idle prompt (/model, blank Enter, resize) must never start a new turn.
+				detectOutputTransition: codexApprovalResponseDetector,
+				shouldInspectOutputForTransition: isCodexManualApprovalPending,
 			};
 		}
 

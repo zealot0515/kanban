@@ -18,6 +18,7 @@
 - **Settings → Labels** 管理目前專案的共用 label，可新增、重新命名、刪除，立即儲存；重新命名／刪除會同步修改該專案所有卡片。從單張卡片移除 label 不會刪掉共用清單，即使已無卡片使用仍可再次選取。既有卡片上的 label 會自動加入清單。
 - 看板上方 **Labels: All** 預設顯示所有卡片（包含無 label 的卡片）。選一個 label 即只顯示該 label，繼續選其他 label 則顯示符合任一選取項目的卡片；**Show all tasks** 恢復全部。篩選只影響顯示，不會刪除任務；篩選中的 **Start all** 只啟動顯示的卡片，清空 Done 功能在顯示全部時使用。
 - 卡片模型優先顯示執行階段回報（Codex `turn_context`、Claude 主 session 的 assistant transcript），其次顯示啟動時指定的模型。CLI 尚未回報預設模型時顯示 `CLI default (not reported)`。更換 CLI 內模型後，下一次相關記錄／hook 回報會更新；顯示不保證涵蓋 CLI 自己啟動的子代理模型。
+- Codex 狀態依主對話的原生 hook 更新：輸入新指示／執行工具回到 In Progress；完成回覆、等待手動核准／回答問題或中斷後進入 Review。依當前 turn 的 `approvals_reviewer` 區分自動審核，審核與執行長命令期間維持 In Progress。空白 Enter 或 `/model` 的閒置畫面重繪不會被當成執行新任務；只有待手動核准時，才保留 Enter 後恢復執行的偵測。完成訊息只讀取對應主 session／turn，排除 guardian 等內部代理，避免卡片出現 `risk_level` JSON。更新 desktop 後需完全退出舊 App，再以新版啟動／恢復 CLI session，才能套用新的 hooks。
 
 ### 設定 Codex 使用 CLIProxy
 
@@ -39,6 +40,8 @@
 若看到 `unexpected argument 'model_providers...'`，代表設定字串沒有正確接到 `-c`；這通常是把 shell 指令格式貼進逐行欄位，或漏掉某個 `-c`。新版會在啟動前回報可修正的錯誤。舊的逐行參數不會被自動重新解讀，請切換格式後重新貼上原文。
 
 ## 執行這份修改
+
+Desktop 終端中的 HTTP／HTTPS 連結（包含 CLI 輸出的 OSC 8 超連結）會直接交給系統預設瀏覽器。修正後需重新打包並安裝新版 App，既有安裝包不會自動套用原始碼變更。
 
 ```sh
 npm ci

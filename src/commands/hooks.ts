@@ -10,11 +10,8 @@ import { buildWindowsCmdArgsArray, resolveWindowsComSpec, shouldUseWindowsCmdLau
 import { parseHookRuntimeContextFromEnv } from "../terminal/hook-runtime-context";
 import type { RuntimeAppRouter } from "../trpc/app-router";
 import { enrichClaudeModelMetadata } from "./hook-events/claude-model";
-import {
-	type CodexMappedHookEvent,
-	resolveCodexRolloutFinalMessageForCwd,
-	startCodexSessionWatcher,
-} from "./hook-events/codex-hook-events";
+import { type CodexMappedHookEvent, startCodexSessionWatcher } from "./hook-events/codex-hook-events";
+import { enrichCodexHookMetadata } from "./hook-events/codex-native-hooks";
 import { enrichDroidReviewMetadata } from "./hook-events/droid-hook-events";
 import { asRecord, normalizeWhitespace, readNestedString, readStringField } from "./hook-events/hook-utils";
 import { normalizeKiroHookMetadata } from "./hook-events/kiro-hook-events";
@@ -457,50 +454,6 @@ function notifyCodexSessionWatcherEvent(mapped: CodexMappedHookEvent): void {
 	spawnBackgroundKanban(appendMetadataFlags(["hooks", "notify", "--event", mapped.event], mapped.metadata));
 }
 
-async function enrichCodexReviewMetadata(args: HooksIngestArgs, cwd: string): Promise<HooksIngestArgs> {
-	if (args.event !== "to_review") {
-		return args;
-	}
-	const metadata = args.metadata ?? {};
-	const source = metadata.source?.toLowerCase();
-	if (source !== "codex") {
-		return args;
-	}
-	const existingFinalMessage =
-		typeof metadata.finalMessage === "string" && metadata.finalMessage.trim().length > 0
-			? metadata.finalMessage
-			: null;
-	if (existingFinalMessage) {
-		return {
-			...args,
-			metadata: {
-				...metadata,
-				activityText: metadata.activityText ?? `Final: ${existingFinalMessage}`,
-			},
-		};
-	}
-
-	const fallbackFinalMessage = await resolveCodexRolloutFinalMessageForCwd(cwd);
-	if (!fallbackFinalMessage) {
-		return {
-			...args,
-			metadata: {
-				...metadata,
-				activityText: metadata.activityText ?? "Waiting for review",
-			},
-		};
-	}
-
-	return {
-		...args,
-		metadata: {
-			...metadata,
-			finalMessage: fallbackFinalMessage,
-			activityText: metadata.activityText ?? `Final: ${fallbackFinalMessage}`,
-		},
-	};
-}
-
 async function runHooksNotify(
 	event: RuntimeHookEvent,
 	options: HookCommandMetadataOptionValues,
@@ -509,7 +462,8 @@ async function runHooksNotify(
 	try {
 		const stdinPayload = await readStdinText();
 		const parsedArgs = parseHooksIngestArgs(event, options, payloadArg, stdinPayload);
-		const codexEnrichedArgs = await enrichCodexReviewMetadata(parsedArgs, process.cwd());
+		const codexEnrichedArgs = await enrichCodexHookMetadata(parsedArgs, process.cwd());
+		if (!codexEnrichedArgs) return;
 		const args = await enrichClaudeModelMetadata(await enrichDroidReviewMetadata(codexEnrichedArgs));
 		await ingestHookEvent(args);
 	} catch {
@@ -558,7 +512,8 @@ async function runCodexHookSubcommand(
 
 	try {
 		const parsedArgs = parseHooksIngestArgs(event, options, payloadArg, payload);
-		const codexEnrichedArgs = await enrichCodexReviewMetadata(parsedArgs, process.cwd());
+		const codexEnrichedArgs = await enrichCodexHookMetadata(parsedArgs, process.cwd());
+		if (!codexEnrichedArgs) return;
 		await ingestHookEvent(codexEnrichedArgs);
 	} catch {
 		// Best effort only.
@@ -731,7 +686,8 @@ async function runHooksIngest(
 	try {
 		const stdinPayload = await readStdinText();
 		const parsedArgs = parseHooksIngestArgs(event, options, payloadArg, stdinPayload);
-		const codexEnrichedArgs = await enrichCodexReviewMetadata(parsedArgs, process.cwd());
+		const codexEnrichedArgs = await enrichCodexHookMetadata(parsedArgs, process.cwd());
+		if (!codexEnrichedArgs) return;
 		args = await enrichDroidReviewMetadata(codexEnrichedArgs);
 	} catch (error) {
 		process.stderr.write(`kanban hooks ingest: ${formatError(error)}\n`);

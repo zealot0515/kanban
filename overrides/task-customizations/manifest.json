@@ -68,6 +68,19 @@
     "web-ui/src/hooks/use-task-labels.ts",
     "web-ui/src/hooks/use-task-start-actions.test.ts",
     "web-ui/src/state/task-labels.test.ts",
-    "web-ui/src/state/task-labels.ts"
+    "web-ui/src/state/task-labels.ts",
+    "web-ui/src/terminal/persistent-terminal-manager.ts",
+    "web-ui/src/terminal/terminal-options.ts",
+    "web-ui/src/terminal/terminal-links.ts",
+    "web-ui/src/terminal/terminal-links.test.ts",
+    "src/commands/hook-events/codex-native-hooks.ts",
+    "src/core/api-validation.ts",
+    "src/terminal/agent-session-adapters.ts",
+    "src/terminal/codex-hook-config.ts",
+    "src/trpc/hooks-api.ts",
+    "test/runtime/api-validation.test.ts",
+    "test/runtime/hooks-codex-native.test.ts",
+    "test/runtime/hooks-codex-rollout-fallback.test.ts",
+    "test/runtime/trpc/hooks-api.test.ts"
   ]
 }

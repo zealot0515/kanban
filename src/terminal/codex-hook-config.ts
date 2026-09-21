@@ -6,7 +6,13 @@ import { quoteShellArg } from "../core/shell";
 
 const CODEX_HOOK_TIMEOUT_SECONDS = 5;
 
-type CodexHookConfigEvent = "PermissionRequest" | "PostToolUse" | "PreToolUse" | "Stop" | "UserPromptSubmit";
+type CodexHookConfigEvent =
+	| "Interrupt"
+	| "PermissionRequest"
+	| "PostToolUse"
+	| "PreToolUse"
+	| "Stop"
+	| "UserPromptSubmit";
 
 type JsonValue = JsonPrimitive | JsonArray | JsonObject;
 type JsonPrimitive = boolean | null | number | string;
@@ -74,6 +80,8 @@ function codexSessionFlagsConfigSource(): string {
 
 function codexHookEventKeyLabel(eventName: CodexHookConfigEvent): string {
 	switch (eventName) {
+		case "Interrupt":
+			return "interrupt";
 		case "PermissionRequest":
 			return "permission_request";
 		case "PostToolUse":
@@ -148,6 +156,10 @@ export function configureCodexHooks(args: string[]): void {
 		eventName: "Stop",
 		command: buildCodexHookCommand("to_review"),
 	};
+	const interruptHook: CodexHookConfig = {
+		eventName: "Interrupt",
+		command: buildCodexHookCommand("to_review"),
+	};
 	const permissionRequestHook: CodexHookConfig = {
 		eventName: "PermissionRequest",
 		command: buildCodexHookCommand("to_review"),
@@ -164,9 +176,14 @@ export function configureCodexHooks(args: string[]): void {
 		matcher: "*",
 	};
 	const trustStateConfigValue = buildCodexHookTrustStateConfigValue(
-		[inProgressHook, reviewHook, permissionRequestHook, preToolUseActivityHook, postToolUseActivityHook].map(
-			buildCodexHookTrustEntry,
-		),
+		[
+			inProgressHook,
+			reviewHook,
+			interruptHook,
+			permissionRequestHook,
+			preToolUseActivityHook,
+			postToolUseActivityHook,
+		].map(buildCodexHookTrustEntry),
 	);
 
 	addCodexConfigOverrideBeforeSubcommand(args, "features.hooks", "true");
@@ -177,6 +194,7 @@ export function configureCodexHooks(args: string[]): void {
 		buildCodexHookConfigValue(inProgressHook.command),
 	);
 	addCodexConfigOverrideBeforeSubcommand(args, "hooks.Stop", buildCodexHookConfigValue(reviewHook.command));
+	addCodexConfigOverrideBeforeSubcommand(args, "hooks.Interrupt", buildCodexHookConfigValue(interruptHook.command));
 	addCodexConfigOverrideBeforeSubcommand(
 		args,
 		"hooks.PermissionRequest",

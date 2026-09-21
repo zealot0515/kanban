@@ -1,6 +1,7 @@
 import type { ITerminalOptions } from "@xterm/xterm";
 
 import type { ThemeTerminalColors } from "@/hooks/use-theme";
+import { openTerminalLink } from "@/terminal/terminal-links";
 
 interface CreateKanbanTerminalOptionsInput {
 	cursorColor: string;
@@ -33,6 +34,7 @@ export function createKanbanTerminalOptions({
 		fontWeightBold: "bold",
 		letterSpacing: 0,
 		lineHeight: 1,
+		linkHandler: { activate: openTerminalLink },
 		macOptionClickForcesSelection: isMacPlatform,
 		macOptionIsMeta: isMacPlatform,
 		rightClickSelectsWord: false,

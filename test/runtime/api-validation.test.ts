@@ -37,6 +37,15 @@ describe("parseWorkspaceFileSearchRequest", () => {
 });
 
 describe("parseHookIngestRequest", () => {
+	it("preserves model/title metadata and explicit final-message clearing", () => {
+		const parsed = parseHookIngestRequest({
+			taskId: "task-1",
+			workspaceId: "workspace-1",
+			event: "to_in_progress",
+			metadata: { taskTitle: "  Root task  ", modelId: "  current-model  ", finalMessage: null },
+		});
+		expect(parsed.metadata).toMatchObject({ taskTitle: "Root task", modelId: "current-model", finalMessage: null });
+	});
 	it("parses and trims task and workspace identifiers", () => {
 		const parsed = parseHookIngestRequest({
 			taskId: "  task-123  ",

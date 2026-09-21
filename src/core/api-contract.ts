@@ -1280,7 +1280,13 @@ export const runtimeHookIngestRequestSchema = z.object({
 	taskId: z.string(),
 	workspaceId: z.string(),
 	event: runtimeHookEventSchema,
-	metadata: runtimeTaskHookActivitySchema.partial().optional(),
+	metadata: runtimeTaskHookActivitySchema
+		.partial()
+		.extend({
+			// Omitted means retain the last answer; explicit null clears it on resume.
+			finalMessage: runtimeTaskHookActivitySchema.shape.finalMessage.removeDefault().optional(),
+		})
+		.optional(),
 });
 export type RuntimeHookIngestRequest = z.infer<typeof runtimeHookIngestRequestSchema>;
 

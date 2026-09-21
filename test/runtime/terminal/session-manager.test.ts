@@ -23,6 +23,15 @@ function createSummary(overrides: Partial<RuntimeTaskSessionSummary> = {}): Runt
 }
 
 describe("TerminalSessionManager", () => {
+	it("clears a final answer only when the hook explicitly supplies null", () => {
+		const manager = new TerminalSessionManager();
+		manager.hydrateFromRecord({ "task-1": createSummary() });
+		manager.applyHookActivity("task-1", { finalMessage: "Previous answer" });
+		expect(manager.applyHookActivity("task-1", { modelId: "test-model" })?.latestHookActivity?.finalMessage).toBe(
+			"Previous answer",
+		);
+		expect(manager.applyHookActivity("task-1", { finalMessage: null })?.latestHookActivity?.finalMessage).toBeNull();
+	});
 	it("updates session titles from messages and retains them across tool events and reloads", () => {
 		const manager = new TerminalSessionManager();
 		manager.hydrateFromRecord({ "task-1": createSummary() });

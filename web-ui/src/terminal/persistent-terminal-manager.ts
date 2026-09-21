@@ -13,6 +13,7 @@ import type {
 	RuntimeTerminalWsServerMessage,
 } from "@/runtime/types";
 import { clearTerminalGeometry, reportTerminalGeometry } from "@/terminal/terminal-geometry-registry";
+import { openTerminalLink } from "@/terminal/terminal-links";
 import { createKanbanTerminalOptions } from "@/terminal/terminal-options";
 import {
 	appendTerminalHeuristicText,
@@ -190,7 +191,7 @@ class PersistentTerminal {
 		});
 		this.terminal.loadAddon(this.fitAddon);
 		this.terminal.loadAddon(new ClipboardAddon());
-		this.terminal.loadAddon(new WebLinksAddon());
+		this.terminal.loadAddon(new WebLinksAddon(openTerminalLink));
 		this.terminal.loadAddon(this.unicode11Addon);
 		this.terminal.unicode.activeVersion = "11";
 		this.terminal.open(this.hostElement);

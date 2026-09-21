@@ -83,6 +83,11 @@ export function createHooksApi(deps: CreateHooksApiDependencies): RuntimeTrpcCon
 						error: `Task "${taskId}" transition failed`,
 					} satisfies RuntimeHookIngestResponse;
 				}
+				// Keep activity ordered with its state transition. A checkpoint can take
+				// longer than the next hook and must not overwrite that newer activity.
+				if (body.metadata) {
+					manager.applyHookActivity(taskId, body.metadata);
+				}
 
 				if (event === "to_review") {
 					const nextTurn = (transitionedSummary.latestTurnCheckpoint?.turn ?? 0) + 1;
@@ -108,12 +113,8 @@ export function createHooksApi(deps: CreateHooksApiDependencies): RuntimeTrpcCon
 					}
 				}
 
-				if (body.metadata) {
-					manager.applyHookActivity(taskId, body.metadata);
-				}
-
 				void deps.broadcastRuntimeWorkspaceStateUpdated(workspaceId, workspacePath);
-				if (event === "to_review") {
+				if (event === "to_review" && manager.getSummary(taskId)?.state === "awaiting_review") {
 					deps.broadcastTaskReadyForReview(workspaceId, taskId);
 				}
 

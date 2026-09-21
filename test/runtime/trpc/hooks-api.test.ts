@@ -23,6 +23,61 @@ function createSummary(overrides: Partial<RuntimeTaskSessionSummary> = {}): Runt
 }
 
 describe("createHooksApi", () => {
+	it("does not replay waiting metadata or a review notification after work resumes during checkpointing", async () => {
+		let summary = createSummary({ state: "running", agentId: "codex" });
+		let finishCheckpoint!: () => void;
+		const checkpointPending = new Promise<void>((resolve) => {
+			finishCheckpoint = resolve;
+		});
+		const applyHookActivity = vi.fn();
+		const reviewNotification = vi.fn();
+		const checkpointCapture = vi.fn(async () => {
+			await checkpointPending;
+			return { turn: 1, ref: "checkpoint", commit: "abc", createdAt: 1 };
+		});
+		const manager = {
+			getSummary: () => summary,
+			transitionToReview: () => {
+				summary = { ...summary, state: "awaiting_review", reviewReason: "hook" };
+				return summary;
+			},
+			transitionToRunning: () => {
+				summary = { ...summary, state: "running", reviewReason: null };
+				return summary;
+			},
+			applyHookActivity,
+			applyTurnCheckpoint: vi.fn(),
+		} as unknown as TerminalSessionManager;
+		const api = createHooksApi({
+			getWorkspacePathById: () => "/tmp/repo",
+			ensureTerminalManagerForWorkspace: async () => manager,
+			broadcastRuntimeWorkspaceStateUpdated: vi.fn(),
+			broadcastTaskReadyForReview: reviewNotification,
+			captureTaskTurnCheckpoint: checkpointCapture,
+		});
+		const review = api.ingest({
+			taskId: "task-1",
+			workspaceId: "workspace-1",
+			event: "to_review",
+			metadata: { activityText: "Waiting for approval" },
+		});
+		await vi.waitFor(() => expect(checkpointCapture).toHaveBeenCalled());
+		await api.ingest({
+			taskId: "task-1",
+			workspaceId: "workspace-1",
+			event: "to_in_progress",
+			metadata: { activityText: "Using Bash" },
+		});
+		finishCheckpoint();
+		await review;
+		expect(applyHookActivity).toHaveBeenLastCalledWith(
+			"task-1",
+			expect.objectContaining({ activityText: "Using Bash" }),
+		);
+		expect(reviewNotification).not.toHaveBeenCalled();
+		expect(summary.state).toBe("running");
+	});
+
 	it("treats ineligible hook transitions as successful no-ops", async () => {
 		const manager = {
 			getSummary: vi.fn(() => createSummary({ state: "running" })),

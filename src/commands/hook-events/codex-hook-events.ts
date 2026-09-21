@@ -267,13 +267,15 @@ function extractRolloutCommandFromPayload(payload: Record<string, unknown>): str
 export async function resolveCodexRolloutFinalMessageForCwd(
 	cwd: string,
 	sessionsRoot = join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions"),
+	selection: { sessionId?: string | null; transcriptPath?: string | null; turnId?: string | null } = {},
 ): Promise<string | null> {
 	if (!cwd.trim()) {
 		return null;
 	}
 	const normalizedCwd = normalizePathForComparison(cwd);
-	const encodedCwd = JSON.stringify(normalizedCwd);
-	const rolloutFiles = (await listCodexRolloutFiles(sessionsRoot)).slice(0, MAX_CODEX_ROLLOUT_FILES_TO_SCAN);
+	const rolloutFiles = selection.transcriptPath
+		? [selection.transcriptPath]
+		: (await listCodexRolloutFiles(sessionsRoot)).slice(0, MAX_CODEX_ROLLOUT_FILES_TO_SCAN);
 
 	for (const filePath of rolloutFiles) {
 		let fileStat: Stats;
@@ -289,7 +291,14 @@ export async function resolveCodexRolloutFinalMessageForCwd(
 		} catch {
 			continue;
 		}
-		if (!prefix.includes(`"cwd":${encodedCwd}`)) {
+		const sessionMeta = parseCodexSessionMeta(prefix);
+		const session = sessionMeta ? asRecord(sessionMeta.payload) : null;
+		if (
+			!session ||
+			isCodexDescendantSession(sessionMeta) ||
+			normalizePathForComparison(readStringField(session, "cwd") ?? "") !== normalizedCwd ||
+			(selection.sessionId && readStringField(session, "id") !== selection.sessionId)
+		) {
 			continue;
 		}
 
@@ -309,13 +318,77 @@ export async function resolveCodexRolloutFinalMessageForCwd(
 			if (!parsedLine) {
 				continue;
 			}
+			const payload = asRecord(parsedLine.payload);
+			const turnId = payload ? readStringField(payload, "turn_id") : null;
+			if (selection.turnId && turnId && turnId !== selection.turnId) return null;
+			// Never borrow the previous turn's answer when the current turn has no final text.
+			if (
+				parsedLine.type === "event_msg" &&
+				(payload?.type === "task_started" || payload?.type === "user_message")
+			) {
+				return null;
+			}
 			const finalMessage = extractFinalMessageFromRolloutLine(parsedLine);
 			if (finalMessage) {
 				return finalMessage;
 			}
 		}
+		return null;
 	}
 
+	return null;
+}
+
+function parseCodexSessionMeta(text: string): Record<string, unknown> | null {
+	return (
+		text
+			.split(/\r?\n/)
+			.map(parseJsonObject)
+			.find((line) => line?.type === "session_meta") ?? null
+	);
+}
+
+export async function readCodexSessionMeta(path: string): Promise<Record<string, unknown> | null> {
+	try {
+		return parseCodexSessionMeta(await readFilePrefix(path, CODEX_ROLLOUT_MATCH_SCAN_BYTES));
+	} catch {
+		return null;
+	}
+}
+
+/** Read the latest turn's settings without borrowing settings from an earlier turn. */
+export async function readCodexTurnContext(path: string, turnId: string): Promise<Record<string, unknown> | null> {
+	let handle: Awaited<ReturnType<typeof open>> | null = null;
+	try {
+		handle = await open(path, "r");
+		let position = (await handle.stat()).size;
+		let remainder: Buffer = Buffer.alloc(0);
+		while (position > 0) {
+			const length = Math.min(position, CODEX_ROLLOUT_MATCH_SCAN_BYTES);
+			position -= length;
+			const buffer = Buffer.alloc(length);
+			const { bytesRead } = await handle.read(buffer, 0, length, position);
+			const combined = Buffer.concat([buffer.subarray(0, bytesRead), remainder]);
+			const firstLineEnd = position > 0 ? combined.indexOf(10) + 1 : 0;
+			if (position > 0 && firstLineEnd === 0) {
+				remainder = combined;
+				continue;
+			}
+			remainder = combined.subarray(0, firstLineEnd);
+			const lines = combined.subarray(firstLineEnd).toString("utf8").split(/\r?\n/);
+			for (let index = lines.length - 1; index >= 0; index -= 1) {
+				if (!lines[index].includes('"turn_context"')) continue;
+				const record = parseJsonObject(lines[index]);
+				if (record?.type !== "turn_context") continue;
+				const payload = asRecord(record.payload);
+				return payload && readStringField(payload, "turn_id") === turnId ? payload : null;
+			}
+		}
+	} catch {
+		// Older CLIs and a transcript that has not been flushed may have no context yet.
+	} finally {
+		await handle?.close();
+	}
 	return null;
 }
 
@@ -624,13 +697,12 @@ function extractCodexCommandSnippet(message: CodexEventPayload, line: string): s
 	return null;
 }
 
-function isCodexDescendantSession(message: unknown): boolean {
+export function isCodexDescendantSession(message: unknown): boolean {
 	const messageRecord = asRecord(message);
 	const payload = messageRecord ? asRecord(messageRecord.payload) : null;
 	const source = payload ? asRecord(payload.source) : null;
-	const subagent = source ? asRecord(source.subagent) : null;
-	const threadSpawn = subagent ? asRecord(subagent.thread_spawn) : null;
-	return threadSpawn !== null;
+	// Includes thread_spawn, review, compaction and internal `other: guardian` sessions.
+	return source?.subagent !== undefined && source.subagent !== null;
 }
 
 export function createCodexWatcherState(): CodexWatcherState {

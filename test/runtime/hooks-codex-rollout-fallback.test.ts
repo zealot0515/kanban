@@ -6,6 +6,45 @@ import { describe, expect, it } from "vitest";
 import { resolveCodexRolloutFinalMessageForCwd } from "../../src/commands/hooks";
 
 describe("resolveCodexRolloutFinalMessageForCwd", () => {
+	it("ignores newer guardian sessions and does not borrow another turn or session's answer", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "kanban-codex-root-"));
+		const cwd = "/tmp/root-task";
+		const rootPath = join(dir, "rollout-1-root.jsonl");
+		const rootMeta = { type: "session_meta", payload: { id: "root", cwd, source: "cli" } };
+		const complete = {
+			type: "event_msg",
+			payload: { type: "task_complete", turn_id: "turn-1", last_agent_message: "Root answer" },
+		};
+		try {
+			await writeFile(rootPath, [rootMeta, complete].map((line) => JSON.stringify(line)).join("\n"));
+			await writeFile(
+				join(dir, "rollout-2-guardian.jsonl"),
+				[
+					{ type: "session_meta", payload: { id: "guardian", cwd, source: { subagent: { other: "guardian" } } } },
+					{ type: "event_msg", payload: { type: "task_complete", last_agent_message: '{"risk_level":"low"}' } },
+				]
+					.map((line) => JSON.stringify(line))
+					.join("\n"),
+			);
+			expect(await resolveCodexRolloutFinalMessageForCwd(cwd, dir)).toBe("Root answer");
+			expect(await resolveCodexRolloutFinalMessageForCwd(cwd, dir, { sessionId: "missing" })).toBeNull();
+			await writeFile(
+				rootPath,
+				[rootMeta, complete, { type: "event_msg", payload: { type: "task_started", turn_id: "turn-2" } }]
+					.map((line) => JSON.stringify(line))
+					.join("\n"),
+			);
+			expect(await resolveCodexRolloutFinalMessageForCwd(cwd, dir)).toBeNull();
+			await writeFile(
+				join(dir, "rollout-3-new-root.jsonl"),
+				JSON.stringify({ type: "session_meta", payload: { id: "new-root", cwd, source: "cli" } }),
+			);
+			expect(await resolveCodexRolloutFinalMessageForCwd(cwd, dir)).toBeNull();
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("returns the latest task_complete final message for the matching cwd", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "kanban-codex-rollout-"));
 		const sessionsRoot = join(tempDir, "sessions");

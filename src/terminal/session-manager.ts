@@ -834,6 +834,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 			typeof activity.toolName === "string" ||
 			typeof activity.toolInputSummary === "string" ||
 			typeof activity.finalMessage === "string" ||
+			activity.finalMessage === null ||
 			typeof activity.hookEventName === "string" ||
 			typeof activity.notificationType === "string" ||
 			typeof activity.source === "string";
@@ -852,8 +853,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 				typeof activity.toolInputSummary === "string"
 					? activity.toolInputSummary
 					: (previous?.toolInputSummary ?? null),
-			finalMessage:
-				typeof activity.finalMessage === "string" ? activity.finalMessage : (previous?.finalMessage ?? null),
+			finalMessage: activity.finalMessage !== undefined ? activity.finalMessage : (previous?.finalMessage ?? null),
 			hookEventName:
 				typeof activity.hookEventName === "string" ? activity.hookEventName : (previous?.hookEventName ?? null),
 			notificationType:

@@ -123,6 +123,7 @@ describe("prepareAgentLaunch hook strategies", () => {
 		expect(launchCommand).toContain("codex-hook");
 		expect(launchCommand).toContain("hooks.UserPromptSubmit");
 		expect(launchCommand).toContain("hooks.Stop");
+		expect(launchCommand).toContain("hooks.Interrupt");
 		expect(launchCommand).toContain("hooks.PermissionRequest");
 		expect(getCodexConfigOverrideValues(launch.args, "features.hooks")).toEqual(["true"]);
 		expect(getCodexConfigOverrideValues(launch.args, "features.codex_hooks")).toEqual([]);
@@ -130,6 +131,7 @@ describe("prepareAgentLaunch hook strategies", () => {
 		expect(hookTrustState).toHaveLength(1);
 		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:user_prompt_submit:0:0"');
 		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:stop:0:0"');
+		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:interrupt:0:0"');
 		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:permission_request:0:0"');
 		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:pre_tool_use:0:0"');
 		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:post_tool_use:0:0"');
