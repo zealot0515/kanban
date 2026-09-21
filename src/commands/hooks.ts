@@ -338,6 +338,10 @@ function normalizeHookMetadata(
 
 	const activityText = inferActivityText(event, payload, toolName, finalMessage, notificationType);
 	const merged: Partial<RuntimeTaskHookActivity> = {
+		taskTitle:
+			flagMetadata.taskTitle ??
+			(payload ? readStringField(payload, "taskTitle") : null) ??
+			(hookEventName?.toLowerCase() === "userpromptsubmit" && payload ? readStringField(payload, "prompt") : null),
 		modelId:
 			flagMetadata.modelId ??
 			(payload ? (readStringField(payload, "modelId") ?? readStringField(payload, "model")) : null),
@@ -425,7 +429,7 @@ function appendMetadataFlags(args: string[], metadata?: Partial<RuntimeTaskHookA
 	if (!metadata) {
 		return args;
 	}
-	if (metadata.modelId) {
+	if (metadata.modelId || metadata.taskTitle) {
 		args.push("--metadata-base64", Buffer.from(JSON.stringify(metadata)).toString("base64"));
 	}
 	if (metadata.source) {

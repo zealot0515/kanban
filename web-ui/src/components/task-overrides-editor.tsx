@@ -27,6 +27,20 @@ export function TaskOverridesEditor({
 		onChange({ ...value, environment: { ...environment, variables } });
 	return (
 		<div className="mt-3 space-y-3 border-t border-border pt-3">
+			<div className="space-y-1">
+				<label htmlFor={`${id}-note`} className="block text-xs text-text-secondary">
+					Note
+				</label>
+				<textarea
+					id={`${id}-note`}
+					value={value.note ?? ""}
+					maxLength={2000}
+					rows={2}
+					placeholder="Your own reminder"
+					className="w-full rounded-md border border-border-bright bg-surface-2 px-2 py-1 text-xs text-text-primary focus:outline-border-focus"
+					onChange={(event) => onChange({ ...value, note: event.target.value })}
+				/>
+			</div>
 			<TaskLabelsEditor labels={value.labels} onChange={(labels) => onChange({ ...value, labels })} />
 			{agentId && agentId !== "cline" && launchProfiles.length > 0 ? (
 				<div className="space-y-1">

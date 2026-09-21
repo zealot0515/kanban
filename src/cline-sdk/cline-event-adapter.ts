@@ -2,6 +2,7 @@
 // Keep protocol-specific parsing here so the runtime and repository can stay
 // focused on lifecycle, storage, and task-facing orchestration.
 import type { RuntimeTaskSessionSummary } from "../core/api-contract";
+import { deriveTaskTitleFromSessionMessage } from "../core/task-title";
 import {
 	appendAssistantChunk,
 	appendReasoningChunk,
@@ -162,11 +163,12 @@ function extractAgentErrorMessage(error: unknown): string | null {
 	return null;
 }
 
-function emitAssistantTextSummary(input: ApplyClineSessionEventInput, text: string | null): void {
+function emitAssistantTextSummary(input: ApplyClineSessionEventInput, text: string | null, complete = false): void {
 	const fullPreviewText = normalizePreviewText(text);
 	const previewText = toPreviewText(fullPreviewText);
 	const retainedToolActivity = getRetainedClineToolActivity(input.entry);
 	emitSummary(input, {
+		...(complete ? { taskTitle: deriveTaskTitleFromSessionMessage(text) || input.entry.summary.taskTitle } : {}),
 		state: "running",
 		lastOutputAt: now(),
 		lastHookAt: now(),
@@ -385,6 +387,7 @@ export function applyClineSessionEvent(input: ApplyClineSessionEventInput): void
 
 		const previousHookActivity = entry.summary.latestHookActivity;
 		const summaryPatch: Partial<RuntimeTaskSessionSummary> = {
+			taskTitle: deriveTaskTitleFromSessionMessage(finalText) || entry.summary.taskTitle,
 			lastOutputAt: now(),
 			lastHookAt: now(),
 			latestHookActivity: {
@@ -434,6 +437,7 @@ export function applyClineSessionEvent(input: ApplyClineSessionEventInput): void
 
 		const previousHookActivity = entry.summary.latestHookActivity;
 		const summaryPatch: Partial<RuntimeTaskSessionSummary> = {
+			taskTitle: deriveTaskTitleFromSessionMessage(finalText) || entry.summary.taskTitle,
 			lastOutputAt: now(),
 			lastHookAt: now(),
 			latestHookActivity: {
@@ -481,7 +485,7 @@ export function applyClineSessionEvent(input: ApplyClineSessionEventInput): void
 				setOrCreateAssistantMessage(entry, taskId, text) ?? createAssistantMessage(entry, taskId, text);
 			input.emitMessage(taskId, message);
 			entry.activeAssistantMessageId = null;
-			emitAssistantTextSummary(input, text);
+			emitAssistantTextSummary(input, text, true);
 			return;
 		}
 
@@ -688,7 +692,7 @@ export function applyClineSessionEvent(input: ApplyClineSessionEventInput): void
 			const message =
 				setOrCreateAssistantMessage(entry, taskId, text) ?? createAssistantMessage(entry, taskId, text);
 			input.emitMessage(taskId, message);
-			emitAssistantTextSummary(input, text);
+			emitAssistantTextSummary(input, text, true);
 		} else {
 			emitSummary(input, {
 				lastOutputAt: now(),

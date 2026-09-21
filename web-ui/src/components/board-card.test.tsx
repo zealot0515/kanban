@@ -180,35 +180,57 @@ describe("BoardCard", () => {
 		}
 	});
 
-	it("shows the running CLI model and lets Done cards edit labels", async () => {
-		const onSaveLabels = vi.fn();
-		await act(async () => {
-			root.render(
-				<TooltipProvider>
-					<BoardCard
-						card={createCard({
-							agentId: "codex",
-							taskOverrides: { cliModel: "configured-model", labels: ["backend"] },
-						})}
-						index={0}
-						columnId="trash"
-						sessionSummary={createSummary("awaiting_review", { agentId: "codex", modelId: "reported-model" })}
-						onSaveLabels={onSaveLabels}
-					/>
-				</TooltipProvider>,
-			);
-		});
-		expect(container.textContent).toContain("reported-model");
-		expect(container.textContent).not.toContain("configured-model");
-		expect(container.textContent).toContain("backend");
-		await act(async () => {
-			(container.querySelector('button[aria-label="Edit labels"]') as HTMLButtonElement).click();
-		});
-		await act(async () => {
-			(container.querySelector('button[aria-label="Remove label backend"]') as HTMLButtonElement).click();
-		});
-		expect(onSaveLabels).toHaveBeenCalledWith("task-1", []);
-	});
+	it.each(["backlog", "in_progress", "review", "trash"] as const)(
+		"lets %s cards edit labels and notes",
+		async (columnId) => {
+			const onSaveNote = vi.fn();
+			const onSaveLabels = vi.fn();
+			await act(async () => {
+				root.render(
+					<TooltipProvider>
+						<BoardCard
+							card={createCard({
+								agentId: "codex",
+								taskOverrides: { cliModel: "configured-model", labels: ["backend"] },
+							})}
+							index={0}
+							columnId={columnId}
+							onSaveNote={onSaveNote}
+							sessionSummary={createSummary("awaiting_review", { agentId: "codex", modelId: "reported-model" })}
+							onSaveLabels={onSaveLabels}
+						/>
+					</TooltipProvider>,
+				);
+			});
+			expect(container.textContent).toContain("reported-model");
+			expect(container.textContent).not.toContain("configured-model");
+			expect(container.textContent).toContain("backend");
+			await act(async () => {
+				(container.querySelector('button[aria-label="Edit labels"]') as HTMLButtonElement).click();
+			});
+			const labelInput = container.querySelector('input[placeholder="Add a label"]') as HTMLInputElement;
+			expect(labelInput.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))).toBe(true);
+			await act(async () => {
+				(container.querySelector('button[aria-label="Remove label backend"]') as HTMLButtonElement).click();
+			});
+			expect(onSaveLabels).toHaveBeenCalledWith("task-1", []);
+			await act(async () => {
+				(container.querySelector('button[aria-label="Edit task note"]') as HTMLButtonElement).click();
+			});
+			const textarea = container.querySelector('textarea[aria-label="Task note"]') as HTMLTextAreaElement;
+			await act(async () => {
+				Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, "My reminder");
+				textarea.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await act(async () => {
+				Array.from(container.querySelectorAll("button"))
+					.find((button) => button.textContent === "Save note")
+					?.click();
+			});
+			expect(onSaveNote).toHaveBeenCalledWith("task-1", "My reminder");
+			expect(container.textContent).toContain("Review API changes");
+		},
+	);
 
 	it("shows an honest model fallback for CLI defaults", async () => {
 		await act(async () => {

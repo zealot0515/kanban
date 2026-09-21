@@ -11,8 +11,12 @@
 - Settings 的 **Launch profiles** 可預先保存環境變數與 CLI 參數；值使用 AES-256-GCM 加密，macOS 優先把金鑰放在 Keychain，設定頁與 task 表單只顯示變數是否已設定，不回傳 secret。啟動 task 時 profile 變數先套用，task 變數後套用，因此 task 可以覆蓋 profile。
 - Profile 與 task 的 CLI arguments 欄位提供 **Command line** 與 **One argument per line** 兩種格式。Command line 可以直接貼 `-c 'model_provider="cliproxy"' -c 'model_context_window=272000'`，不要包含開頭的 `codex`。支援引號分組、跳脫與換行續接，保留 `$VAR` 原文，不執行 shell 指令。舊設定維持逐行格式，每個 `-c` 和它的值各佔一行；TOML 本身的雙引號不會被移除。畫面顯示解析後參數數量，未關閉引號會阻止儲存或建立 task。
 - Codex profile 可選 **Custom provider / CLIProxy**，明確覆蓋 `model_provider`、API base URL 與 API key 變數。只設定 `OPENAI_API_KEY` 不會自動把本機 `openai` provider 切到 proxy；環境變數與 provider 設定是不同項目。
-- 新增 task 時若 prompt 留白直接按 **Start**，會建立 **New task** 卡片與自己的 worktree，並直接開啟 task 詳細頁的 Codex／Claude CLI；不送出 prompt、附件或 `/plan` 指令，可先用 `/model` 調整模型再開始對話。卡片可重新命名，profile、環境變數與 CLI 參數照常套用；重新整理後仍會保留卡片。輸入 prompt 時維持原本 Start／Start and open 的流程。
-- 每一欄的卡片都可用鉛筆改名、標籤按鈕新增／移除 label。改名不改 prompt。
+- 新增 task 時若 prompt 留白直接按 **Start**，會建立 **New task** 卡片與自己的 worktree，並直接開啟 task 詳細頁的 Codex／Claude CLI；不送出 prompt、附件或 `/plan` 指令，可先用 `/model` 調整模型再開始對話。主名稱會隨對話自動更新，profile、環境變數與 CLI 參數照常套用；重新整理後仍會保留卡片。輸入 prompt 時維持原本 Start／Start and open 的流程。
+- 卡片主名稱會跟隨 Codex／Claude 主 session、Cline SDK 的進度與完整回覆更新：取第一句／行，最多 80 字，不額外呼叫 AI。空白 task 送出第一個有效 prompt 或收到 agent 訊息後就不再停在 **New task**；`/model` 和工具指令不會成為名稱。Claude 於後續 hook 讀取主 transcript 時更新，Codex 隨 rollout／hook 更新；其他 CLI 未提供文字事件時保留原名稱。
+- 原本改名按鈕改為 **Add note / Edit note**。Note 是自己的註記，可多行、最多 2000 字，不改 prompt、不送給 agent，也不會被自動名稱覆蓋；建立／編輯任務也有 Note 欄。舊版手動改過、與初始 prompt 名稱不同的標題，會在首次自動更新時保留到尚未設定的 Note。
+- 每一欄（含 In Progress、Review、Done）的卡片都可以隨時增刪 label；建立過的 label 會出現在其他卡片的快速選取清單，也可以輸入文字搜尋或新增。
+- **Settings → Labels** 管理目前專案的共用 label，可新增、重新命名、刪除，立即儲存；重新命名／刪除會同步修改該專案所有卡片。從單張卡片移除 label 不會刪掉共用清單，即使已無卡片使用仍可再次選取。既有卡片上的 label 會自動加入清單。
+- 看板上方 **Labels: All** 預設顯示所有卡片（包含無 label 的卡片）。選一個 label 即只顯示該 label，繼續選其他 label 則顯示符合任一選取項目的卡片；**Show all tasks** 恢復全部。篩選只影響顯示，不會刪除任務；篩選中的 **Start all** 只啟動顯示的卡片，清空 Done 功能在顯示全部時使用。
 - 卡片模型優先顯示執行階段回報（Codex `turn_context`、Claude 主 session 的 assistant transcript），其次顯示啟動時指定的模型。CLI 尚未回報預設模型時顯示 `CLI default (not reported)`。更換 CLI 內模型後，下一次相關記錄／hook 回報會更新；顯示不保證涵蓋 CLI 自己啟動的子代理模型。
 
 ### 設定 Codex 使用 CLIProxy

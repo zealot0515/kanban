@@ -11,7 +11,7 @@ import {
 	TASK_START_IN_PLAN_MODE_STORAGE_KEY,
 } from "@/hooks/app-utils";
 import type { RuntimeAgentId, RuntimeTaskClineSettings, TaskOverrides } from "@/runtime/types";
-import { addTaskToColumnWithResult, findCardSelection, updateTask, updateTaskTitle } from "@/state/board-state";
+import { addTaskToColumnWithResult, findCardSelection, updateTask } from "@/state/board-state";
 import { toTelemetrySelectedAgentId, trackTaskCreated } from "@/telemetry/events";
 import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
 import { resolveTaskAutoReviewMode } from "@/types";
@@ -84,7 +84,7 @@ export interface UseTaskEditorResult {
 	handleCancelEditTask: () => void;
 	handleSaveEditedTask: () => string | null;
 	handleSaveAndStartEditedTask: () => void;
-	handleSaveTaskTitle: (taskId: string, title: string) => void;
+	handleSaveTaskNote: (taskId: string, note: string) => void;
 	handleSaveTaskLabels: (taskId: string, labels: string[]) => void;
 	handleCreateTask: (options?: CreateTaskOptions) => string | null;
 	handleCreateTasks: (prompts: string[], options?: CreateTaskOptions) => string[];
@@ -367,14 +367,22 @@ export function useTaskEditor({
 		[setBoard, editingTaskId],
 	);
 
-	const handleSaveTaskTitle = useCallback(
-		(taskId: string, title: string) => {
-			setBoard((currentBoard) => {
-				const updated = updateTaskTitle(currentBoard, taskId, title);
-				return updated.updated ? updated.board : currentBoard;
-			});
+	const handleSaveTaskNote = useCallback(
+		(taskId: string, note: string) => {
+			setBoard((current) => ({
+				...current,
+				columns: current.columns.map((column) => ({
+					...column,
+					cards: column.cards.map((card) =>
+						card.id === taskId
+							? { ...card, taskOverrides: { ...card.taskOverrides, note }, updatedAt: Date.now() }
+							: card,
+					),
+				})),
+			}));
+			setEditTaskOverrides((current) => (editingTaskId === taskId ? { ...current, note } : current));
 		},
-		[setBoard],
+		[setBoard, editingTaskId],
 	);
 
 	const handleCreateTask = useCallback(
@@ -597,7 +605,7 @@ export function useTaskEditor({
 		handleCancelEditTask,
 		handleSaveEditedTask,
 		handleSaveAndStartEditedTask,
-		handleSaveTaskTitle,
+		handleSaveTaskNote,
 		handleSaveTaskLabels,
 		handleCreateTask,
 		handleCreateTasks,

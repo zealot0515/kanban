@@ -55,6 +55,19 @@
     "src/core/cli-arguments.ts",
     "test/runtime/cli-arguments.test.ts",
     "web-ui/src/components/cli-arguments-editor.tsx",
-    "web-ui/src/components/cli-arguments-editor.test.tsx"
+    "web-ui/src/components/cli-arguments-editor.test.tsx",
+    "src/cline-sdk/cline-event-adapter.ts",
+    "src/core/task-title.ts",
+    "test/integration/workspace-state.integration.test.ts",
+    "test/runtime/cline-sdk/cline-event-adapter.test.ts",
+    "web-ui/src/components/task-label-filter.tsx",
+    "web-ui/src/components/task-label-settings.tsx",
+    "web-ui/src/components/task-labels.test.tsx",
+    "web-ui/src/components/task-note-editor.tsx",
+    "web-ui/src/hooks/use-session-task-titles.ts",
+    "web-ui/src/hooks/use-task-labels.ts",
+    "web-ui/src/hooks/use-task-start-actions.test.ts",
+    "web-ui/src/state/task-labels.test.ts",
+    "web-ui/src/state/task-labels.ts"
   ]
 }

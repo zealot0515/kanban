@@ -18,6 +18,25 @@ export function resolveClaudeTranscriptModel(text: string): string | null {
 	return null;
 }
 
+export function resolveClaudeTranscriptTitle(text: string): string | null {
+	const lines = text.split(/\r?\n/);
+	for (let index = lines.length - 1; index >= 0; index--) {
+		try {
+			const entry = asRecord(JSON.parse(lines[index]));
+			if (!entry || entry.type !== "assistant" || entry.isSidechain === true) continue;
+			const message = asRecord(entry.message);
+			if (!message || message.model === "<synthetic>" || !Array.isArray(message.content)) continue;
+			for (const part of message.content) {
+				const block = asRecord(part);
+				if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) return block.text;
+			}
+		} catch {
+			/* Transcript tails can contain incomplete lines. */
+		}
+	}
+	return null;
+}
+
 export async function enrichClaudeModelMetadata<
 	T extends {
 		payload?: Record<string, unknown> | null;
@@ -35,8 +54,14 @@ export async function enrichClaudeModelMetadata<
 		const bytes = Math.min(stat.size, 1024 * 1024);
 		const buffer = Buffer.alloc(bytes);
 		const { bytesRead } = await file.read(buffer, 0, bytes, stat.size - bytes);
-		const modelId = resolveClaudeTranscriptModel(buffer.subarray(0, bytesRead).toString("utf8"));
-		return modelId ? { ...args, metadata: { ...args.metadata, modelId } } : args;
+		const transcript = buffer.subarray(0, bytesRead).toString("utf8");
+		const modelId = resolveClaudeTranscriptModel(transcript);
+		// A new user prompt takes precedence over the previous assistant turn.
+		const taskTitle = args.metadata.taskTitle || resolveClaudeTranscriptTitle(transcript);
+		return {
+			...args,
+			metadata: { ...args.metadata, ...(modelId ? { modelId } : {}), ...(taskTitle ? { taskTitle } : {}) },
+		};
 	} catch {
 		return args;
 	} finally {

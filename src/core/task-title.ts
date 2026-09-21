@@ -52,3 +52,23 @@ export function resolveTaskTitle(title: string | null | undefined, prompt: strin
 	}
 	return deriveTaskTitleFromPrompt(prompt);
 }
+
+/** Use human-facing session messages, never tool arguments or terminal escape sequences. */
+export function deriveTaskTitleFromSessionMessage(message: string | null | undefined): string {
+	return deriveTaskTitleFromPrompt(
+		(message ?? "").replace(/^\s{0,3}(?:#{1,6}\s+|[-*]\s+)/gm, "").replaceAll("**", ""),
+	);
+}
+
+export function deriveTaskTitleFromActivity(activity: {
+	taskTitle?: string | null;
+	activityText?: string | null;
+	finalMessage?: string | null;
+}): string {
+	const taskTitle = activity.taskTitle?.trim();
+	const message =
+		(taskTitle?.startsWith("/") ? null : taskTitle) ||
+		activity.finalMessage ||
+		activity.activityText?.match(/^Agent: (.+)/s)?.[1];
+	return deriveTaskTitleFromSessionMessage(message);
+}

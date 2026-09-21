@@ -23,6 +23,24 @@ function createSummary(overrides: Partial<RuntimeTaskSessionSummary> = {}): Runt
 }
 
 describe("TerminalSessionManager", () => {
+	it("updates session titles from messages and retains them across tool events and reloads", () => {
+		const manager = new TerminalSessionManager();
+		manager.hydrateFromRecord({ "task-1": createSummary() });
+		expect(manager.applyHookActivity("task-1", { taskTitle: "/model" })?.taskTitle).toBeUndefined();
+		expect(manager.applyHookActivity("task-1", { taskTitle: "Fix login" })?.taskTitle).toBe("Fix login");
+		expect(
+			manager.applyHookActivity("task-1", { activityText: "Agent: Checking the login flow. More details." })
+				?.taskTitle,
+		).toBe("Checking the login flow.");
+		expect(manager.applyHookActivity("task-1", { activityText: "Running command: npm test" })?.taskTitle).toBe(
+			"Checking the login flow.",
+		);
+		const summary = manager.applyHookActivity("task-1", { finalMessage: "Fixed the login flow." });
+		if (!summary) throw new Error("Missing session");
+		const restored = new TerminalSessionManager();
+		restored.hydrateFromRecord({ "task-1": summary });
+		expect(restored.getSummary("task-1")?.taskTitle).toBe("Fixed the login flow.");
+	});
 	it("clears trust prompt state when transitioning to review", () => {
 		const manager = new TerminalSessionManager();
 		const entry = {

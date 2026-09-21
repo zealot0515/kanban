@@ -47,6 +47,14 @@ describe("getStartableBacklogTaskIds", () => {
 		const board = createBoard({ backlogCards: [] });
 		expect(getStartableBacklogTaskIds(board)).toEqual([]);
 	});
+	it("starts only requested visible cards while still respecting hidden dependencies", () => {
+		const board = createBoard({
+			backlogCards: [createCard("parent"), createCard("hidden-child"), createCard("visible"), createCard("hidden")],
+			dependencies: [{ id: "dep", fromTaskId: "parent", toTaskId: "hidden-child", createdAt: 1 }],
+		});
+		expect(getStartableBacklogTaskIds(board, ["parent", "visible"])).toEqual(["visible"]);
+		expect(getStartableBacklogTaskIds(board, [])).toEqual([]);
+	});
 
 	it("excludes a parent task whose child is also in the backlog", () => {
 		const board = createBoard({

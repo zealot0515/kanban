@@ -277,6 +277,7 @@ export function normalizeBoardData(rawBoard: unknown): BoardData | null {
 
 	const candidateColumns = (rawBoard as { columns?: unknown }).columns;
 	const candidateDependencies = (rawBoard as { dependencies?: unknown }).dependencies;
+	const candidateLabelCatalog = (rawBoard as { labelCatalog?: unknown }).labelCatalog;
 	if (!Array.isArray(candidateColumns)) {
 		return null;
 	}
@@ -322,6 +323,16 @@ export function normalizeBoardData(rawBoard: unknown): BoardData | null {
 	}
 
 	return runtimeTaskState.updateTaskDependencies({
+		labelCatalog: Array.isArray(candidateLabelCatalog)
+			? [
+					...new Set(
+						candidateLabelCatalog
+							.filter((label): label is string => typeof label === "string")
+							.map((label) => label.trim())
+							.filter((label) => label.length > 0 && label.length <= 40),
+					),
+				]
+			: undefined,
 		columns: normalizedColumns,
 		dependencies: normalizedDependencies,
 	});

@@ -272,6 +272,7 @@ describe("applyClineSessionEvent", () => {
 		expect(result.entry.summary.latestHookActivity?.hookEventName).toBe("assistant_delta");
 		expect(result.entry.summary.latestHookActivity?.activityText).toBe("Here is the complete response.");
 		expect(result.entry.summary.latestHookActivity?.finalMessage).toBe("Here is the complete response.");
+		expect(entry.summary.taskTitle).toBe("Here is the complete response.");
 	});
 
 	it("transitions into and back out of awaiting review around user-attention tools", () => {

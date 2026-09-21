@@ -13,9 +13,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BoardColumn } from "@/components/board-column";
 import { DependencyOverlay } from "@/components/dependencies/dependency-overlay";
 import { useDependencyLinking } from "@/components/dependencies/use-dependency-linking";
+import { useTaskLabelsContext } from "@/hooks/use-task-labels";
 import type { RuntimeAgentId, RuntimeTaskSessionSummary } from "@/runtime/types";
 import { canCreateTaskDependency } from "@/state/board-state";
 import { findCardColumnId, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
+import { matchesTaskLabels, resolveFilteredDrop } from "@/state/task-labels";
 import type { BoardCard, BoardColumnId, BoardData, BoardDependency } from "@/types";
 
 const BOARD_COLUMN_ORDER: BoardColumnId[] = ["backlog", "in_progress", "review", "trash"];
@@ -37,7 +39,7 @@ export function KanbanBoard({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
-	onSaveTaskTitle,
+	onSaveTaskNote,
 	onSaveTaskLabels,
 	onCommitTask,
 	onOpenPrTask,
@@ -61,12 +63,12 @@ export function KanbanBoard({
 	onCardSelect: (taskId: string) => void;
 	onCreateTask: () => void;
 	onStartTask?: (taskId: string) => void;
-	onStartAllTasks?: () => void;
+	onStartAllTasks?: (taskIds?: string[]) => void;
 	onClearTrash?: () => void;
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCard) => void;
-	onSaveTaskTitle?: (taskId: string, title: string) => void;
+	onSaveTaskNote?: (taskId: string, note: string) => void;
 	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
@@ -85,6 +87,7 @@ export function KanbanBoard({
 	defaultAgentId?: RuntimeAgentId | null;
 	defaultClineModelId?: string | null;
 }): React.ReactElement {
+	const { selectedLabels } = useTaskLabelsContext();
 	const dragOccurredRef = useRef(false);
 	const boardRef = useRef<HTMLElement>(null);
 	const sensorApiRef = useRef<SensorAPI | null>(null);
@@ -359,9 +362,9 @@ export function KanbanBoard({
 			requestAnimationFrame(() => {
 				dragOccurredRef.current = false;
 			});
-			onDragEnd(result);
+			onDragEnd(resolveFilteredDrop(result, data, selectedLabels));
 		},
-		[clearProgrammaticCardMoveInFlight, onDragEnd],
+		[clearProgrammaticCardMoveInFlight, onDragEnd, data, selectedLabels],
 	);
 
 	// Dependency links should reroute as soon as motion starts, not only after drop.
@@ -386,16 +389,25 @@ export function KanbanBoard({
 				{data.columns.map((column) => (
 					<BoardColumn
 						key={column.id}
-						column={column}
+						column={{ ...column, cards: column.cards.filter((card) => matchesTaskLabels(card, selectedLabels)) }}
 						taskSessions={taskSessions}
 						onCreateTask={column.id === "backlog" ? onCreateTask : undefined}
 						onStartTask={column.id === "backlog" ? onStartTask : undefined}
-						onStartAllTasks={column.id === "backlog" ? onStartAllTasks : undefined}
-						onClearTrash={column.id === "trash" ? onClearTrash : undefined}
+						onStartAllTasks={
+							column.id === "backlog" && onStartAllTasks
+								? () =>
+										onStartAllTasks(
+											column.cards
+												.filter((card) => matchesTaskLabels(card, selectedLabels))
+												.map((card) => card.id),
+										)
+								: undefined
+						}
+						onClearTrash={column.id === "trash" && selectedLabels === null ? onClearTrash : undefined}
 						editingTaskId={column.id === "backlog" ? editingTaskId : null}
 						inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 						onEditTask={column.id === "backlog" ? onEditTask : undefined}
-						onSaveTitle={onSaveTaskTitle}
+						onSaveNote={onSaveTaskNote}
 						onSaveLabels={onSaveTaskLabels}
 						onCommitTask={column.id === "review" ? onCommitTask : undefined}
 						onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}

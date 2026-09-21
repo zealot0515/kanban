@@ -18,7 +18,7 @@ export function BoardColumn({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
-	onSaveTitle,
+	onSaveNote,
 	onSaveLabels,
 	onCommitTask,
 	onOpenPrTask,
@@ -50,7 +50,7 @@ export function BoardColumn({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
-	onSaveTitle?: (taskId: string, title: string) => void;
+	onSaveNote?: (taskId: string, note: string) => void;
 	onSaveLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
@@ -192,7 +192,7 @@ export function BoardColumn({
 											workspacePath={workspacePath}
 											defaultAgentId={defaultAgentId}
 											defaultClineModelId={defaultClineModelId}
-											onSaveTitle={onSaveTitle}
+											onSaveNote={onSaveNote}
 											onSaveLabels={onSaveLabels}
 											onClick={() => {
 												if (column.id === "backlog") {

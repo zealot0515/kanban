@@ -20,10 +20,11 @@ export interface UseTaskStartActionsResult {
 	handleCreateAndStartTasks: (prompts: string[], options?: { keepDialogOpen?: boolean }) => string[];
 	handleCreateStartAndOpenTask: (options?: { keepDialogOpen?: boolean }) => string | null;
 	handleStartTaskFromBoard: (taskId: string) => void;
-	handleStartAllBacklogTasksFromBoard: () => void;
+	handleStartAllBacklogTasksFromBoard: (taskIds?: string[]) => void;
 }
 
-export function getStartableBacklogTaskIds(board: BoardData): string[] {
+export function getStartableBacklogTaskIds(board: BoardData, requestedTaskIds?: string[]): string[] {
+	const requested = requestedTaskIds ? new Set(requestedTaskIds) : null;
 	const allBacklogTasks = new Set<string>();
 	const allInProgressTasks = new Set<string>();
 	const startableTaskIds: string[] = [];
@@ -43,7 +44,7 @@ export function getStartableBacklogTaskIds(board: BoardData): string[] {
 		const isChildTaskInBacklog = dependency && allBacklogTasks.has(dependency.toTaskId);
 		const isChildTaskInProgress = dependency && allInProgressTasks.has(dependency.toTaskId);
 
-		if (!isChildTaskInBacklog && !isChildTaskInProgress) {
+		if (!isChildTaskInBacklog && !isChildTaskInProgress && (!requested || requested.has(card.id))) {
 			startableTaskIds.push(card.id);
 		}
 	});
@@ -97,14 +98,17 @@ export function useTaskStartActions({
 		[board, handleStartTask, startBacklogTasks],
 	);
 
-	const handleStartAllBacklogTasksFromBoard = useCallback(() => {
-		const backlogTaskIds = getStartableBacklogTaskIds(board);
+	const handleStartAllBacklogTasksFromBoard = useCallback(
+		(taskIds?: string[]) => {
+			const backlogTaskIds = getStartableBacklogTaskIds(board, taskIds);
 
-		if (backlogTaskIds.length === 0) {
-			return;
-		}
-		startBacklogTasks(backlogTaskIds);
-	}, [board, startBacklogTasks]);
+			if (backlogTaskIds.length === 0) {
+				return;
+			}
+			startBacklogTasks(backlogTaskIds);
+		},
+		[board, startBacklogTasks],
+	);
 
 	const handleCreateAndStartTask = useCallback(
 		(options?: { keepDialogOpen?: boolean }): string | null => {

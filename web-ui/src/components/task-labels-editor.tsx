@@ -1,6 +1,7 @@
 import { Plus, X } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useTaskLabelsContext } from "@/hooks/use-task-labels";
 
 export function TaskLabelsEditor({
 	labels = [],
@@ -10,10 +11,11 @@ export function TaskLabelsEditor({
 	onChange: (labels: string[]) => void;
 }) {
 	const id = useId();
+	const { labels: catalog, registerLabel } = useTaskLabelsContext();
 	const [draft, setDraft] = useState("");
-	const addLabel = () => {
-		const label = draft.trim();
+	const addLabel = (label = draft.trim()) => {
 		if (!label || labels.includes(label) || labels.length >= 20) return;
+		registerLabel(label);
 		onChange([...labels, label]);
 		setDraft("");
 	};
@@ -39,6 +41,24 @@ export function TaskLabelsEditor({
 					</span>
 				))}
 			</div>
+			<div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto">
+				{catalog
+					.filter(
+						(label) =>
+							!labels.includes(label) && label.toLocaleLowerCase().includes(draft.trim().toLocaleLowerCase()),
+					)
+					.map((label) => (
+						<Button
+							key={label}
+							size="sm"
+							disabled={labels.length >= 20}
+							onClick={() => addLabel(label)}
+							aria-label={`Select label ${label}`}
+						>
+							{label}
+						</Button>
+					))}
+			</div>
 			<div className="flex gap-1">
 				<input
 					id={id}
@@ -59,7 +79,7 @@ export function TaskLabelsEditor({
 					size="sm"
 					icon={<Plus size={14} />}
 					aria-label="Add label"
-					onClick={addLabel}
+					onClick={() => addLabel()}
 					disabled={!draft.trim() || labels.includes(draft.trim()) || labels.length >= 20}
 				/>
 			</div>

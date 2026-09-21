@@ -2,8 +2,8 @@ import { Draggable } from "@hello-pangea/dnd";
 import { getRuntimeAgentCatalogEntry } from "@runtime-agent-catalog";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, AlertTriangle, Bot, GitBranch, Pencil, Play, RotateCcw, Tag, Trash2 } from "lucide-react";
-import type { KeyboardEvent, MouseEvent } from "react";
+import { AlertCircle, AlertTriangle, Bot, GitBranch, Play, RotateCcw, Tag, Trash2 } from "lucide-react";
+import type { MouseEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -12,6 +12,7 @@ import {
 	resolveClineModelDisplayName,
 } from "@/components/detail-panels/cline-model-picker-options";
 import { TaskLabelsEditor } from "@/components/task-labels-editor";
+import { TaskNoteEditor } from "@/components/task-note-editor";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/spinner";
@@ -221,7 +222,7 @@ export function BoardCard({
 	onStart,
 	onMoveToTrash,
 	onRestoreFromTrash,
-	onSaveTitle,
+	onSaveNote,
 	onSaveLabels,
 	onCommit,
 	onOpenPr,
@@ -247,7 +248,7 @@ export function BoardCard({
 	onStart?: (taskId: string) => void;
 	onMoveToTrash?: (taskId: string) => void;
 	onRestoreFromTrash?: (taskId: string) => void;
-	onSaveTitle?: (taskId: string, title: string) => void;
+	onSaveNote?: (taskId: string, note: string) => void;
 	onSaveLabels?: (taskId: string, labels: string[]) => void;
 	onCommit?: (taskId: string) => void;
 	onOpenPr?: (taskId: string) => void;
@@ -266,10 +267,6 @@ export function BoardCard({
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
 	const [isEditingLabels, setIsEditingLabels] = useState(false);
-	const [isEditingTitle, setIsEditingTitle] = useState(false);
-	const [draftTitle, setDraftTitle] = useState(card.title);
-	const titleInputRef = useRef<HTMLInputElement | null>(null);
-	const titleEditCancelledRef = useRef(false);
 	const [descriptionContainerRef, descriptionRect] = useMeasure<HTMLDivElement>();
 	const descriptionRef = useRef<HTMLParagraphElement | null>(null);
 	const [descriptionWidthFallback, setDescriptionWidthFallback] = useState(0);
@@ -317,57 +314,9 @@ export function BoardCard({
 		setIsDescriptionExpanded(false);
 	}, [card.id, displayDescription]);
 
-	useEffect(() => {
-		setDraftTitle(card.title);
-		setIsEditingTitle(false);
-	}, [card.id, card.title]);
-
-	useEffect(() => {
-		if (!isEditingTitle) {
-			return;
-		}
-		window.requestAnimationFrame(() => {
-			titleInputRef.current?.focus();
-			titleInputRef.current?.select();
-		});
-	}, [isEditingTitle]);
-
 	const stopEvent = (event: MouseEvent<HTMLElement>) => {
 		event.preventDefault();
 		event.stopPropagation();
-	};
-
-	const submitTitle = () => {
-		if (titleEditCancelledRef.current) {
-			titleEditCancelledRef.current = false;
-			return;
-		}
-		setIsEditingTitle(false);
-		if (!onSaveTitle) {
-			return;
-		}
-		const trimmed = draftTitle.trim();
-		if (trimmed === card.title) {
-			return;
-		}
-		onSaveTitle(card.id, trimmed);
-	};
-
-	const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-		if (event.key === "Enter") {
-			event.preventDefault();
-			event.stopPropagation();
-			titleInputRef.current?.blur();
-			return;
-		}
-		if (event.key === "Escape") {
-			event.preventDefault();
-			event.stopPropagation();
-			titleEditCancelledRef.current = true;
-			setDraftTitle(card.title);
-			setIsEditingTitle(false);
-			titleInputRef.current?.blur();
-		}
 	};
 
 	const isDescriptionMeasured = descriptionRect.width > 0;
@@ -573,55 +522,15 @@ export function BoardCard({
 							<div className="flex items-center gap-2" style={{ minHeight: 24 }}>
 								{statusMarker ? <div className="inline-flex items-center">{statusMarker}</div> : null}
 								<div className="flex-1 min-w-0">
-									{isEditingTitle ? (
-										<input
-											ref={titleInputRef}
-											value={draftTitle}
-											onChange={(event) => setDraftTitle(event.currentTarget.value)}
-											onBlur={submitTitle}
-											onKeyDown={handleTitleKeyDown}
-											onMouseDown={(event) => {
-												event.stopPropagation();
-											}}
-											className="h-7 w-full rounded-md border border-border-focus bg-surface-2 px-2 text-sm font-medium text-text-primary focus:outline-none"
-										/>
-									) : onSaveTitle ? (
-										<div className="flex items-center gap-1 min-w-0">
-											<p
-												className={cn(
-													"kb-line-clamp-1 m-0 min-w-0 font-medium text-sm",
-													isTrashCard && "line-through text-text-tertiary",
-												)}
-											>
-												{displayTitle}
-											</p>
-											<button
-												type="button"
-												aria-label="Edit task title"
-												onMouseDown={stopEvent}
-												onClick={(event) => {
-													stopEvent(event);
-													setDraftTitle(card.title);
-													setIsEditingTitle(true);
-												}}
-												className={cn(
-													"shrink-0 cursor-pointer rounded-sm p-0.5 text-text-tertiary hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-													isHovered ? "opacity-100" : "opacity-0",
-												)}
-											>
-												<Pencil size={12} />
-											</button>
-										</div>
-									) : (
-										<p
-											className={cn(
-												"kb-line-clamp-1 m-0 font-medium text-sm",
-												isTrashCard && "line-through text-text-tertiary",
-											)}
-										>
-											{displayTitle}
-										</p>
-									)}
+									<p
+										className={cn(
+											"kb-line-clamp-1 m-0 font-medium text-sm",
+											isTrashCard && "line-through text-text-tertiary",
+										)}
+										title={displayTitle}
+									>
+										{displayTitle}
+									</p>
 								</div>
 								{columnId === "backlog" ? (
 									<Button
@@ -673,6 +582,11 @@ export function BoardCard({
 									</Tooltip>
 								) : null}
 							</div>
+							<TaskNoteEditor
+								key={card.id}
+								note={card.taskOverrides?.note}
+								onSave={onSaveNote ? (note) => onSaveNote(card.id, note) : undefined}
+							/>
 							{displayDescription ? (
 								<div ref={descriptionContainerRef}>
 									<p
@@ -733,8 +647,8 @@ export function BoardCard({
 							) : null}
 							<div
 								className="mt-2 flex flex-wrap items-center gap-1"
-								onClick={stopEvent}
-								onMouseDown={stopEvent}
+								onClick={(event) => event.stopPropagation()}
+								onMouseDown={(event) => event.stopPropagation()}
 								onKeyDown={(event) => event.stopPropagation()}
 							>
 								{!isEditingLabels

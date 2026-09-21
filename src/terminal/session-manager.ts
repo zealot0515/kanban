@@ -1,6 +1,7 @@
 // PTY-backed runtime for non-Cline task sessions and the workspace shell terminal.
 // It owns process lifecycle, terminal protocol filtering, and summary updates
 // for command-driven agents such as Claude Code, Codex, Gemini, and shell sessions.
+
 import type {
 	RuntimeTaskHookActivity,
 	RuntimeTaskImage,
@@ -9,6 +10,7 @@ import type {
 	RuntimeTaskSessionSummary,
 	RuntimeTaskTurnCheckpoint,
 } from "../core/api-contract";
+import { deriveTaskTitleFromActivity } from "../core/task-title";
 import {
 	type AgentAdapterLaunchInput,
 	type AgentOutputTransitionDetector,
@@ -826,6 +828,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		}
 
 		const hasActivityUpdate =
+			typeof activity.taskTitle === "string" ||
 			typeof activity.modelId === "string" ||
 			typeof activity.activityText === "string" ||
 			typeof activity.toolName === "string" ||
@@ -840,6 +843,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 
 		const previous = entry.summary.latestHookActivity;
 		const next: RuntimeTaskHookActivity = {
+			taskTitle: activity.taskTitle ?? previous?.taskTitle ?? null,
 			modelId: activity.modelId ?? previous?.modelId ?? null,
 			activityText:
 				typeof activity.activityText === "string" ? activity.activityText : (previous?.activityText ?? null),
@@ -860,6 +864,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		};
 
 		const didChange =
+			next.taskTitle !== (previous?.taskTitle ?? null) ||
 			next.modelId !== (previous?.modelId ?? null) ||
 			next.activityText !== (previous?.activityText ?? null) ||
 			next.toolName !== (previous?.toolName ?? null) ||
@@ -875,6 +880,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 		const summary = updateSummary(entry, {
 			lastHookAt: now(),
 			latestHookActivity: next,
+			taskTitle: deriveTaskTitleFromActivity(activity) || entry.summary.taskTitle,
 			modelId: activity.modelId?.trim() || entry.summary.modelId,
 		});
 		if (entry.active) {

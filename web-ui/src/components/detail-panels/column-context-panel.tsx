@@ -22,7 +22,7 @@ function ColumnSection({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
-	onSaveTitle,
+	onSaveNote,
 	onSaveLabels,
 	onCommitTask,
 	onOpenPrTask,
@@ -48,7 +48,7 @@ function ColumnSection({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
-	onSaveTitle?: (taskId: string, title: string) => void;
+	onSaveNote?: (taskId: string, note: string) => void;
 	onSaveLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
@@ -204,7 +204,7 @@ function ColumnSection({
 												workspacePath={workspacePath}
 												defaultAgentId={defaultAgentId}
 												defaultClineModelId={defaultClineModelId}
-												onSaveTitle={onSaveTitle}
+												onSaveNote={onSaveNote}
 												onSaveLabels={onSaveLabels}
 												onClick={() => {
 													if (column.id === "backlog") {
@@ -247,7 +247,7 @@ export function ColumnContextPanel({
 	editingTaskId,
 	inlineTaskEditor,
 	onEditTask,
-	onSaveTaskTitle,
+	onSaveTaskNote,
 	onSaveTaskLabels,
 	onCommitTask,
 	onOpenPrTask,
@@ -270,7 +270,7 @@ export function ColumnContextPanel({
 	editingTaskId?: string | null;
 	inlineTaskEditor?: ReactNode;
 	onEditTask?: (card: BoardCardModel) => void;
-	onSaveTaskTitle?: (taskId: string, title: string) => void;
+	onSaveTaskNote?: (taskId: string, note: string) => void;
 	onSaveTaskLabels?: (taskId: string, labels: string[]) => void;
 	onCommitTask?: (taskId: string) => void;
 	onOpenPrTask?: (taskId: string) => void;
@@ -361,7 +361,7 @@ export function ColumnContextPanel({
 							editingTaskId={column.id === "backlog" ? editingTaskId : null}
 							inlineTaskEditor={column.id === "backlog" ? inlineTaskEditor : undefined}
 							onEditTask={column.id === "backlog" ? onEditTask : undefined}
-							onSaveTitle={onSaveTaskTitle}
+							onSaveNote={onSaveTaskNote}
 							onSaveLabels={onSaveTaskLabels}
 							onCommitTask={column.id === "review" ? onCommitTask : undefined}
 							onOpenPrTask={column.id === "review" ? onOpenPrTask : undefined}

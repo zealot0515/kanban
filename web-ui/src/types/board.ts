@@ -67,6 +67,7 @@ export interface BoardDependency {
 }
 
 export interface BoardData {
+	labelCatalog?: string[];
 	columns: BoardColumn[];
 	dependencies: BoardDependency[];
 }

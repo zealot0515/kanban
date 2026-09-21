@@ -23,6 +23,7 @@ import {
 	Plus,
 	Settings,
 	SlidersHorizontal,
+	Tags,
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +38,7 @@ import {
 	type RuntimeShortcutIconOption,
 	type RuntimeShortcutPickerIconId,
 } from "@/components/shared/runtime-shortcut-icons";
+import { TaskLabelSettings } from "@/components/task-label-settings";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Dialog, DialogFooter, DialogHeader } from "@/components/ui/dialog";
@@ -132,6 +134,7 @@ type LaunchProfileDraft = {
 type SettingsNavId =
 	| "general"
 	| "launch-profiles"
+	| "labels"
 	| "cline"
 	| "git-prompts"
 	| "notifications"
@@ -145,6 +148,7 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
 	clineOnly?: boolean;
 }> = [
 	{ id: "general", label: "General", icon: <SlidersHorizontal size={16} /> },
+	{ id: "labels", label: "Labels", icon: <Tags size={16} /> },
 	{ id: "launch-profiles", label: "Launch profiles", icon: <KeyRound size={16} /> },
 	{ id: "cline", label: "Cline", icon: <Bot size={16} />, clineOnly: true },
 	{ id: "git-prompts", label: "Git Prompts", icon: <GitCommit size={16} /> },
@@ -916,6 +920,12 @@ export function RuntimeSettingsDialog({
 						</p>
 					</div>
 
+					{workspaceId ? (
+						<>
+							<div data-settings-section="labels" />
+							<TaskLabelSettings key={workspaceId} />
+						</>
+					) : null}
 					{/* ---- Launch profiles ---- */}
 					<div data-settings-section="launch-profiles" />
 					<div className="sticky top-0 -mx-5 px-5 pt-4 pb-2 bg-surface-1 z-10">

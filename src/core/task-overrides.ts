@@ -2,6 +2,7 @@ import { z } from "zod";
 import { cliArgumentsInputSchema, cliArgumentsSchema } from "./cli-arguments";
 
 export const taskOverridesSchema = z.object({
+	note: z.string().max(2000).optional(),
 	labels: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
 	cliModel: z
 		.string()

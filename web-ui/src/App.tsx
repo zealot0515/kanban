@@ -4,7 +4,6 @@
 import { FolderOpen } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
 import { AddProjectDialog } from "@/components/add-project-dialog";
 import { notifyError, showAppToast } from "@/components/app-toaster";
 import { CardDetailView } from "@/components/card-detail-view";
@@ -18,6 +17,7 @@ import { RuntimeSettingsDialog, type RuntimeSettingsSection } from "@/components
 import { StartupOnboardingDialog } from "@/components/startup-onboarding-dialog";
 import { TaskCreateDialog } from "@/components/task-create-dialog";
 import { TaskInlineCreateCard } from "@/components/task-inline-create-card";
+import { TaskLabelFilter } from "@/components/task-label-filter";
 import { TopBar } from "@/components/top-bar";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,10 +47,12 @@ import { useOpenWorkspace } from "@/hooks/use-open-workspace";
 import { parseRemovedProjectPathFromStreamError, useProjectNavigation } from "@/hooks/use-project-navigation";
 import { useProjectUiState } from "@/hooks/use-project-ui-state";
 import { useReviewReadyNotifications } from "@/hooks/use-review-ready-notifications";
+import { useSessionTaskTitles } from "@/hooks/use-session-task-titles";
 import { useShortcutActions } from "@/hooks/use-shortcut-actions";
 import { useStartupOnboarding } from "@/hooks/use-startup-onboarding";
 import { useTaskBranchOptions } from "@/hooks/use-task-branch-options";
 import { useTaskEditor } from "@/hooks/use-task-editor";
+import { TaskLabelsContext, useTaskLabels } from "@/hooks/use-task-labels";
 import { useTaskSessions } from "@/hooks/use-task-sessions";
 import { useTaskStartActions } from "@/hooks/use-task-start-actions";
 import { useTerminalPanels } from "@/hooks/use-terminal-panels";
@@ -70,6 +72,7 @@ import { useTerminalConnectionReady } from "@/runtime/use-terminal-connection-re
 import { useWorkspacePersistence } from "@/runtime/use-workspace-persistence";
 import { saveWorkspaceState } from "@/runtime/workspace-state-query";
 import { applyTaskDetailClineSettingsChange, findCardSelection } from "@/state/board-state";
+import { matchesTaskLabels } from "@/state/task-labels";
 import {
 	getTaskWorkspaceInfo,
 	getTaskWorkspaceSnapshot,
@@ -332,7 +335,7 @@ export default function App(): ReactElement {
 		handleCancelEditTask,
 		handleSaveEditedTask,
 		handleSaveAndStartEditedTask,
-		handleSaveTaskTitle,
+		handleSaveTaskNote,
 		handleSaveTaskLabels,
 		handleCreateTask,
 		handleCreateTasks,
@@ -550,6 +553,9 @@ export default function App(): ReactElement {
 		[navigationProjectPath, workspacePath],
 	);
 
+	useSessionTaskTitles(board, sessions, setBoard);
+	const taskLabels = useTaskLabels(board, setBoard, currentProjectId);
+
 	const handleOpenSettings = useCallback((section?: RuntimeSettingsSection) => {
 		setSettingsInitialSection(section ?? null);
 		setIsSettingsOpen(true);
@@ -635,7 +641,15 @@ export default function App(): ReactElement {
 		handleOpenSettings,
 		handleToggleGitHistory,
 		handleCloseGitHistory,
-		onStartAllTasks: handleStartAllBacklogTasksFromBoard,
+		onStartAllTasks: () =>
+			handleStartAllBacklogTasksFromBoard(
+				selectedCard
+					? undefined
+					: (board.columns
+							.find((column) => column.id === "backlog")
+							?.cards.filter((card) => matchesTaskLabels(card, taskLabels.selectedLabels))
+							.map((card) => card.id) ?? []),
+			),
 	});
 
 	useEffect(() => {
@@ -812,7 +826,7 @@ export default function App(): ReactElement {
 		return <KanbanAccessBlockedFallback />;
 	}
 
-	return (
+	const appLayout = (
 		<LayoutCustomizationsProvider onResetBottomTerminalLayoutCustomizations={resetBottomTerminalLayoutCustomizations}>
 			<div className="flex h-[100svh] min-w-0 overflow-hidden">
 				{!selectedCard ? (
@@ -928,6 +942,7 @@ export default function App(): ReactElement {
 								</div>
 							) : (
 								<div className="flex flex-1 flex-col min-h-0 min-w-0">
+									{!isGitHistoryOpen ? <TaskLabelFilter /> : null}
 									<div className="flex flex-1 min-h-0 min-w-0">
 										{isGitHistoryOpen ? (
 											<GitHistoryView
@@ -954,7 +969,7 @@ export default function App(): ReactElement {
 												editingTaskId={editingTaskId}
 												inlineTaskEditor={inlineTaskEditor}
 												onEditTask={handleOpenEditTask}
-												onSaveTaskTitle={handleSaveTaskTitle}
+												onSaveTaskNote={handleSaveTaskNote}
 												onSaveTaskLabels={handleSaveTaskLabels}
 												onCommitTask={handleCommitTask}
 												onOpenPrTask={handleOpenPrTask}
@@ -1041,7 +1056,7 @@ export default function App(): ReactElement {
 									onEditTask={(task) => {
 										handleOpenEditTask(task, { preserveDetailSelection: true });
 									}}
-									onSaveTaskTitle={handleSaveTaskTitle}
+									onSaveTaskNote={handleSaveTaskNote}
 									onSaveTaskLabels={handleSaveTaskLabels}
 									onCommitTask={handleCommitTask}
 									onOpenPrTask={handleOpenPrTask}
@@ -1214,4 +1229,5 @@ export default function App(): ReactElement {
 			</div>
 		</LayoutCustomizationsProvider>
 	);
+	return <TaskLabelsContext.Provider value={taskLabels}>{appLayout}</TaskLabelsContext.Provider>;
 }

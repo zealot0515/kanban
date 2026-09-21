@@ -96,6 +96,32 @@ function initGitRepository(path: string): void {
 }
 
 describe.sequential("workspace-state integration", () => {
+	it("round-trips notes, reusable labels and automatic titles without filling a blank prompt", async () => {
+		await withTemporaryHome(async () => {
+			const { path: workspacePath, cleanup } = createTempDir("kanban-task-metadata-");
+			try {
+				initGitRepository(workspacePath);
+				const board = createBoard("Checking login");
+				const task = board.columns[0]?.cards[0];
+				if (!task) throw new Error("Missing task fixture");
+				task.prompt = "";
+				task.taskOverrides = { note: "Ask Sam\nbefore release", labels: ["backend"] };
+				board.labelCatalog = ["backend", "not-in-use"];
+				const summary = { ...createSessionSummary("task-1"), taskTitle: "Checking login" };
+				await saveWorkspaceState(workspacePath, { board, sessions: { "task-1": summary } });
+				const restored = await loadWorkspaceState(workspacePath);
+				expect(restored.board.labelCatalog).toEqual(["backend", "not-in-use"]);
+				expect(restored.board.columns[0]?.cards[0]).toMatchObject({
+					title: "Checking login",
+					prompt: "",
+					taskOverrides: task.taskOverrides,
+				});
+				expect(restored.sessions["task-1"]?.taskTitle).toBe("Checking login");
+			} finally {
+				cleanup();
+			}
+		});
+	});
 	it("persists revision numbers and rejects stale writes", async () => {
 		await withTemporaryHome(async () => {
 			const { path: sandboxRoot, cleanup } = createTempDir("kanban-workspace-");

@@ -389,6 +389,14 @@ function mapCodexRolloutActivityLine(line: string): { mapped: CodexMappedHookEve
 			return null;
 		}
 		const normalizedType = payloadType.toLowerCase();
+		if (normalizedType === "user_message") {
+			const taskTitle = readStringField(payload, "message");
+			if (!taskTitle || taskTitle.startsWith("/")) return null;
+			return {
+				fingerprint: `rollout:user_message:${taskTitle}`,
+				mapped: { event: "activity", metadata: { taskTitle, source: "codex" } },
+			};
+		}
 		if (normalizedType === "agent_message") {
 			const phase = readStringField(payload, "phase");
 			const message = readStringField(payload, "message");

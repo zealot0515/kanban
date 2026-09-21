@@ -2,9 +2,31 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { enrichClaudeModelMetadata, resolveClaudeTranscriptModel } from "../../src/commands/hook-events/claude-model";
+import {
+	enrichClaudeModelMetadata,
+	resolveClaudeTranscriptModel,
+	resolveClaudeTranscriptTitle,
+} from "../../src/commands/hook-events/claude-model";
 
 describe("Claude model reporting", () => {
+	it("uses main-session assistant text for titles and skips tool calls, reasoning and sidechains", () => {
+		const transcript = [
+			{ type: "assistant", message: { content: [{ type: "text", text: "Fixing login" }] } },
+			{
+				type: "assistant",
+				message: {
+					content: [
+						{ type: "tool_use", input: "secret arguments" },
+						{ type: "thinking", thinking: "internal" },
+					],
+				},
+			},
+			{ type: "assistant", isSidechain: true, message: { content: [{ type: "text", text: "Child task" }] } },
+		]
+			.map((entry) => JSON.stringify(entry))
+			.join("\n");
+		expect(resolveClaudeTranscriptTitle(`${transcript}\n{`)).toBe("Fixing login");
+	});
 	it("finds the latest main-session model across model changes and incomplete transcript lines", () => {
 		const lines = [
 			JSON.stringify({ type: "assistant", message: { model: "first-model" } }),

@@ -114,7 +114,7 @@ describe("startCodexSessionWatcher", () => {
 		]);
 	});
 
-	it("reports model changes from the active rollout", async () => {
+	it("reports model and task messages from the active root rollout", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "kanban-model-watcher-"));
 		const sessionsRoot = join(tempDir, "sessions");
 		const events: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
@@ -132,6 +132,8 @@ describe("startCodexSessionWatcher", () => {
 					{ type: "session_meta", payload: { cwd: "/tmp/model-task" } },
 					{ type: "turn_context", payload: { model: "first-model" } },
 					{ type: "turn_context", payload: { model: "second-model" } },
+					{ type: "event_msg", payload: { type: "user_message", message: "Fix login" } },
+					{ type: "event_msg", payload: { type: "user_message", message: "/model" } },
 				]
 					.map((line) => `${JSON.stringify(line)}\n`)
 					.join(""),
@@ -152,7 +154,13 @@ describe("startCodexSessionWatcher", () => {
 					.join(""),
 			);
 			await stop();
-			expect(events.map((event) => event.metadata?.modelId)).toEqual(["first-model", "second-model"]);
+			expect(events.map((event) => event.metadata?.modelId).filter(Boolean)).toEqual([
+				"first-model",
+				"second-model",
+			]);
+			expect(events.filter((event) => event.metadata?.taskTitle).map((event) => event.metadata?.taskTitle)).toEqual([
+				"Fix login",
+			]);
 		} finally {
 			await stop();
 			await rm(tempDir, { recursive: true, force: true });

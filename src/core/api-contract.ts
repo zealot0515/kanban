@@ -191,6 +191,7 @@ export const runtimeBoardDependencySchema = z.object({
 export type RuntimeBoardDependency = z.infer<typeof runtimeBoardDependencySchema>;
 
 export const runtimeBoardDataSchema = z.object({
+	labelCatalog: z.array(z.string().trim().min(1).max(40)).optional(),
 	columns: z.array(runtimeBoardColumnSchema),
 	dependencies: z.array(runtimeBoardDependencySchema).default([]),
 });
@@ -267,6 +268,7 @@ export const runtimeTaskSessionReviewReasonSchema = z
 export type RuntimeTaskSessionReviewReason = z.infer<typeof runtimeTaskSessionReviewReasonSchema>;
 
 export const runtimeTaskHookActivitySchema = z.object({
+	taskTitle: z.string().nullable().optional(),
 	modelId: z.string().nullable().optional(),
 	activityText: z.string().nullable().default(null),
 	toolName: z.string().nullable().default(null),
@@ -287,6 +289,7 @@ export const runtimeTaskTurnCheckpointSchema = z.object({
 export type RuntimeTaskTurnCheckpoint = z.infer<typeof runtimeTaskTurnCheckpointSchema>;
 
 export const runtimeTaskSessionSummarySchema = z.object({
+	taskTitle: z.string().nullable().optional(),
 	modelId: z.string().nullable().optional(),
 	taskId: z.string(),
 	state: runtimeTaskSessionStateSchema,
