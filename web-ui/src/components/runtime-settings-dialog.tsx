@@ -105,6 +105,7 @@ function launchProfileDraftFromSummary(profile: LaunchProfileSummary): LaunchPro
 		cliArgs: [...profile.cliArgs],
 		cliArgsInput: profile.cliArgsInput ? { ...profile.cliArgsInput } : undefined,
 		codexProvider: profile.codexProvider ? { ...profile.codexProvider } : undefined,
+		sidebarAgent: profile.sidebarAgent === true,
 		variables: profile.variables.map((variable) => ({
 			name: variable.name,
 			value: "",
@@ -128,6 +129,7 @@ type LaunchProfileDraft = {
 	cliArgs: string[];
 	cliArgsInput?: LaunchProfileSummary["cliArgsInput"];
 	codexProvider?: LaunchProfileSummary["codexProvider"];
+	sidebarAgent: boolean;
 	variables: Array<{ name: string; value: string; configured: boolean }>;
 };
 
@@ -767,6 +769,7 @@ export function RuntimeSettingsDialog({
 			cliArgs: profile.cliArgs,
 			cliArgsInput: profile.cliArgsInput,
 			codexProvider: profile.codexProvider,
+			...(profile.sidebarAgent ? { sidebarAgent: true } : {}),
 			variables: profile.variables
 				.filter((variable) => variable.name.trim().length > 0)
 				.map((variable) => ({
@@ -946,7 +949,7 @@ export function RuntimeSettingsDialog({
 								onClick={() =>
 									setLaunchProfiles((current) => [
 										...current,
-										{ name: "", agentId: null, cliArgs: [], variables: [] },
+										{ name: "", agentId: null, cliArgs: [], sidebarAgent: false, variables: [] },
 									])
 								}
 								disabled={controlsDisabled || launchProfiles.length >= 50}
@@ -1008,6 +1011,33 @@ export function RuntimeSettingsDialog({
 											updateLaunchProfile(profileIndex, { cliArgs: [], cliArgsInput })
 										}
 									/>
+									<div className="flex items-center gap-2">
+										<RadixSwitch.Root
+											checked={profile.sidebarAgent}
+											disabled={controlsDisabled}
+											aria-label={`Use ${profile.name || "this profile"} for the sidebar agent`}
+											onCheckedChange={(checked) =>
+												setLaunchProfiles((current) =>
+													current.map((candidate, index) => ({
+														...candidate,
+														// Only one profile can drive the sidebar agent.
+														sidebarAgent:
+															index === profileIndex
+																? checked
+																: checked
+																	? false
+																	: candidate.sidebarAgent,
+													})),
+												)
+											}
+											className="relative h-5 w-9 shrink-0 rounded-full bg-surface-4 data-[state=checked]:bg-accent cursor-pointer disabled:opacity-40"
+										>
+											<RadixSwitch.Thumb className="block h-4 w-4 rounded-full bg-white shadow-sm transition-transform translate-x-0.5 data-[state=checked]:translate-x-[18px]" />
+										</RadixSwitch.Root>
+										<span className="text-xs text-text-secondary">
+											Use for the sidebar agent (restarts it on save)
+										</span>
+									</div>
 									<div className="space-y-1">
 										{profile.variables.map((variable, variableIndex) => (
 											<div key={variableIndex} className="flex gap-1">

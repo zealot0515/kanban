@@ -53,6 +53,7 @@ import { useStartupOnboarding } from "@/hooks/use-startup-onboarding";
 import { useTaskBranchOptions } from "@/hooks/use-task-branch-options";
 import { useTaskEditor } from "@/hooks/use-task-editor";
 import { TaskLabelsContext, useTaskLabels } from "@/hooks/use-task-labels";
+import { useTaskSessionRestart } from "@/hooks/use-task-session-restart";
 import { useTaskSessions } from "@/hooks/use-task-sessions";
 import { useTaskStartActions } from "@/hooks/use-task-start-actions";
 import { useTerminalPanels } from "@/hooks/use-terminal-panels";
@@ -198,6 +199,7 @@ export default function App(): ReactElement {
 		ensureTaskWorkspace,
 		startTaskSession,
 		stopTaskSession,
+		restartTaskSession,
 		sendTaskSessionInput,
 		sendTaskChatMessage,
 		cancelTaskChatTurn,
@@ -207,6 +209,10 @@ export default function App(): ReactElement {
 	} = useTaskSessions({
 		currentProjectId,
 		setSessions,
+	});
+	const { restartTaskSessionLoadingById, handleRestartTaskSession } = useTaskSessionRestart({
+		board,
+		restartTaskSession,
 	});
 
 	const {
@@ -1070,6 +1076,8 @@ export default function App(): ReactElement {
 									onMoveReviewCardToTrash={handleMoveReviewCardToTrash}
 									onRestoreTaskFromTrash={handleRestoreTaskFromTrash}
 									onCancelAutomaticTaskAction={handleCancelAutomaticTaskAction}
+									onRestartTaskSession={handleRestartTaskSession}
+									restartTaskSessionLoadingById={restartTaskSessionLoadingById}
 									onAddReviewComments={(taskId: string, text: string) => {
 										void handleAddReviewComments(taskId, text);
 									}}

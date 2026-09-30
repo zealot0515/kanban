@@ -41,6 +41,29 @@ describe("TerminalStateMirror", () => {
 		expect(snapshot.snapshot).toContain("fullscreen");
 	});
 
+	it("restores SGR mouse encoding alongside mouse tracking", async () => {
+		const mirror = createMirror();
+
+		// Crossterm-style EnableMouseCapture, as sent by Codex.
+		mirror.applyOutput(Buffer.from("\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1015h\u001b[?1006h", "utf8"));
+
+		const snapshot = await mirror.getSnapshot();
+
+		expect(snapshot.snapshot).toContain("\u001b[?1003h");
+		expect(snapshot.snapshot.endsWith("\u001b[?1006h")).toBe(true);
+	});
+
+	it("omits mouse encoding once mouse tracking is disabled", async () => {
+		const mirror = createMirror();
+
+		mirror.applyOutput(Buffer.from("\u001b[?1003h\u001b[?1006h\u001b[?1003l\u001b[?1006l", "utf8"));
+
+		const snapshot = await mirror.getSnapshot();
+
+		expect(snapshot.snapshot).not.toContain("\u001b[?1003h");
+		expect(snapshot.snapshot).not.toContain("\u001b[?1006h");
+	});
+
 	it("applies queued resizes before generating a snapshot", async () => {
 		const mirror = createMirror(80, 24);
 

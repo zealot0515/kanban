@@ -146,6 +146,15 @@ export async function loadLaunchProfileSummaries(): Promise<LaunchProfileSummary
 	return (await readStoredProfiles()).map(summarizeLaunchProfile);
 }
 
+/** The profile flagged for the sidebar agent, when it applies to the agent being launched. */
+export async function resolveSidebarLaunchProfile(agentId: string): Promise<StoredLaunchProfile | null> {
+	const profile = (await readStoredProfiles()).find((candidate) => candidate.sidebarAgent === true);
+	if (!profile || (profile.agentId !== null && profile.agentId !== agentId)) {
+		return null;
+	}
+	return profile;
+}
+
 export async function resolveLaunchProfile(profileId: string | undefined): Promise<StoredLaunchProfile | null> {
 	if (!profileId) return null;
 	const profile = (await readStoredProfiles()).find((candidate) => candidate.id === profileId);
@@ -170,7 +179,8 @@ export async function saveLaunchProfiles(inputs: LaunchProfileSave[]): Promise<L
 	return await lockedFileSystem.withLocks([{ path: getLaunchProfilesPath(), type: "file" }], async () => {
 		const existing = await readStoredProfiles();
 		const existingById = new Map(existing.map((profile) => [profile.id, profile]));
-		const profiles = parsed.map((input) => {
+		const sidebarAgentIndex = parsed.findIndex((input) => input.sidebarAgent === true);
+		const profiles = parsed.map((input, index) => {
 			const id = input.id ?? randomUUID().replaceAll("-", "").slice(0, 12);
 			const previous = existingById.get(id);
 			const previousValues = new Map(
@@ -193,6 +203,7 @@ export async function saveLaunchProfiles(inputs: LaunchProfileSave[]): Promise<L
 				codexProvider: input.codexProvider,
 				cliArgs: resolveCliArguments(input),
 				cliArgsInput: input.cliArgsInput,
+				...(index === sidebarAgentIndex ? { sidebarAgent: true } : {}),
 				variables,
 			});
 		});

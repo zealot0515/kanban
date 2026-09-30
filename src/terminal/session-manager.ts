@@ -39,6 +39,7 @@ import { TerminalStateMirror } from "./terminal-state-mirror";
 const MAX_WORKSPACE_TRUST_BUFFER_CHARS = 16_384;
 const AUTO_RESTART_WINDOW_MS = 5_000;
 const MAX_AUTO_RESTARTS_PER_WINDOW = 3;
+const STOP_AND_WAIT_TIMEOUT_MS = 5_000;
 // TUI apps (Codex, OpenCode) can query OSC 10/11 before the browser terminal is attached
 // and ready to answer. We intercept those startup probes during early PTY output, synthesize
 // foreground/background color replies, then disable the filter once a live terminal listener
@@ -948,6 +949,32 @@ export class TerminalSessionManager implements TerminalSessionService {
 			});
 		}
 		return cloneSummary(entry.summary);
+	}
+
+	/** Stops the task's agent process and resolves once it has exited, so a fresh launch is not skipped. */
+	async stopTaskSessionAndWait(taskId: string, timeoutMs = STOP_AND_WAIT_TIMEOUT_MS): Promise<void> {
+		const active = this.entries.get(taskId)?.active;
+		if (!active) {
+			return;
+		}
+		const exited = new Promise<boolean>((resolve) => {
+			const timer = setTimeout(() => {
+				unsubscribe();
+				resolve(false);
+			}, timeoutMs);
+			const unsubscribe = this.onSummary((summary) => {
+				if (summary.taskId !== taskId || this.entries.get(taskId)?.active === active) {
+					return;
+				}
+				clearTimeout(timer);
+				unsubscribe();
+				resolve(true);
+			});
+		});
+		this.stopTaskSession(taskId);
+		if (!(await exited)) {
+			throw new Error("The agent process did not exit in time. Try again, or stop the task first.");
+		}
 	}
 
 	markInterruptedAndStopAll(): RuntimeTaskSessionSummary[] {

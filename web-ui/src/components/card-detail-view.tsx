@@ -335,6 +335,8 @@ export function CardDetailView({
 	onMoveReviewCardToTrash,
 	onRestoreTaskFromTrash,
 	onCancelAutomaticTaskAction,
+	onRestartTaskSession,
+	restartTaskSessionLoadingById,
 	commitTaskLoadingById,
 	openPrTaskLoadingById,
 	agentCommitTaskLoadingById,
@@ -394,6 +396,8 @@ export function CardDetailView({
 	onMoveReviewCardToTrash?: (taskId: string) => void;
 	onRestoreTaskFromTrash?: (taskId: string) => void;
 	onCancelAutomaticTaskAction?: (taskId: string) => void;
+	onRestartTaskSession?: (taskId: string) => void;
+	restartTaskSessionLoadingById?: Record<string, boolean>;
 	commitTaskLoadingById?: Record<string, boolean>;
 	openPrTaskLoadingById?: Record<string, boolean>;
 	agentCommitTaskLoadingById?: Record<string, boolean>;
@@ -696,6 +700,12 @@ export function CardDetailView({
 					? getTaskAutoReviewCancelButtonLabel(selection.card.autoReviewMode)
 					: null
 			}
+			onRestartSession={
+				isTaskTerminalEnabled && sessionSummary?.agentId && onRestartTaskSession
+					? () => onRestartTaskSession(selection.card.id)
+					: undefined
+			}
+			isRestartSessionLoading={restartTaskSessionLoadingById?.[selection.card.id] ?? false}
 			panelBackgroundColor="var(--color-surface-0)"
 			terminalBackgroundColor={terminalThemeColors.surfacePrimary}
 			cursorColor={terminalThemeColors.textPrimary}

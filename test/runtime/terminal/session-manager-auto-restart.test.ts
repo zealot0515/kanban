@@ -108,6 +108,53 @@ describe("TerminalSessionManager auto-restart", () => {
 		manager.stopTaskSession("task-override");
 	});
 
+	it("waits for the agent to exit on stop-and-wait without triggering auto-restart", async () => {
+		const spawned: Array<ReturnType<typeof createMockPtySession>> = [];
+		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {
+			const session = createMockPtySession(444 + spawned.length, request);
+			spawned.push(session);
+			return session;
+		});
+		const manager = new TerminalSessionManager();
+		manager.attach("task-restart", { onOutput: vi.fn() });
+		await manager.startTaskSession({
+			taskId: "task-restart",
+			agentId: "codex",
+			binary: "codex",
+			args: [],
+			cwd: "/tmp/task-restart",
+			prompt: "Build",
+		});
+
+		let settled = false;
+		const stopped = manager.stopTaskSessionAndWait("task-restart").then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(spawned[0]?.stop).toHaveBeenCalledTimes(1);
+		expect(settled).toBe(false);
+
+		spawned[0]?.triggerExit(0);
+		await stopped;
+		expect(settled).toBe(true);
+		expect(ptySessionSpawnMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects stop-and-wait when the agent does not exit in time", async () => {
+		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => createMockPtySession(555, request));
+		const manager = new TerminalSessionManager();
+		await manager.startTaskSession({
+			taskId: "task-hung",
+			agentId: "codex",
+			binary: "codex",
+			args: [],
+			cwd: "/tmp/task-hung",
+			prompt: "Build",
+		});
+
+		await expect(manager.stopTaskSessionAndWait("task-hung", 10)).rejects.toThrow("did not exit in time");
+	});
+
 	it("restarts an attached agent session after it exits", async () => {
 		const spawnedSessions: Array<ReturnType<typeof createMockPtySession>> = [];
 		ptySessionSpawnMock.mockImplementation((request: MockSpawnRequest) => {

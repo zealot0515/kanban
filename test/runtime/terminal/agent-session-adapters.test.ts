@@ -137,6 +137,8 @@ describe("prepareAgentLaunch hook strategies", () => {
 		expect(hookTrustState[0]).toContain('"/<session-flags>/config.toml:post_tool_use:0:0"');
 		expect(hookTrustState[0]).toContain('trusted_hash="sha256:');
 		expect(launchCommand).toContain("timeout=5");
+		// Codex clamps Interrupt hook timeouts to 3s before hashing; a larger value breaks pre-trust.
+		expect(getCodexConfigOverrideValues(launch.args, "hooks.Interrupt")[0]).toContain("timeout=3");
 		expect(launchCommand).not.toContain("codex-wrapper");
 		expect(launchCommand).not.toContain("notify=");
 

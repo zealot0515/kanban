@@ -52,6 +52,7 @@ export interface UseTaskSessionsResult {
 	upsertSession: (summary: RuntimeTaskSessionSummary) => void;
 	ensureTaskWorkspace: (task: BoardCard) => Promise<EnsureTaskWorkspaceResult>;
 	startTaskSession: (task: BoardCard, options?: StartTaskSessionOptions) => Promise<StartTaskSessionResult>;
+	restartTaskSession: (task: BoardCard) => Promise<StartTaskSessionResult>;
 	stopTaskSession: (taskId: string) => Promise<void>;
 	sendTaskSessionInput: (
 		taskId: string,
@@ -187,6 +188,42 @@ export function useTaskSessions({ currentProjectId, setSessions }: UseTaskSessio
 		[currentProjectId, upsertSession],
 	);
 
+	const restartTaskSession = useCallback(
+		async (task: BoardCard): Promise<StartTaskSessionResult> => {
+			if (!currentProjectId) {
+				return { ok: false, message: "No project selected." };
+			}
+			try {
+				const trpcClient = getRuntimeTrpcClient(currentProjectId);
+				const geometry =
+					getTerminalGeometry(task.id) ?? estimateTaskSessionGeometry(window.innerWidth, window.innerHeight);
+				const payload = await trpcClient.runtime.restartTaskSession.mutate({
+					taskId: task.id,
+					prompt: "",
+					taskTitle: task.title,
+					baseRef: task.baseRef,
+					cols: geometry.cols,
+					rows: geometry.rows,
+					agentId: task.agentId,
+					clineSettings: task.clineSettings,
+					taskOverrides: task.taskOverrides,
+				});
+				if (!payload.ok || !payload.summary) {
+					return {
+						ok: false,
+						message: payload.error ?? "Task session restart failed.",
+					};
+				}
+				upsertSession(payload.summary);
+				return { ok: true };
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return { ok: false, message };
+			}
+		},
+		[currentProjectId, upsertSession],
+	);
+
 	const stopTaskSession = useCallback(
 		async (taskId: string): Promise<void> => {
 			if (!currentProjectId) {
@@ -288,6 +325,7 @@ export function useTaskSessions({ currentProjectId, setSessions }: UseTaskSessio
 		upsertSession,
 		ensureTaskWorkspace,
 		startTaskSession,
+		restartTaskSession,
 		stopTaskSession,
 		sendTaskSessionInput,
 		sendTaskChatMessage,

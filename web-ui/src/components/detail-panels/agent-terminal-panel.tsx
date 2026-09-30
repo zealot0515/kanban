@@ -1,6 +1,6 @@
 import "@xterm/xterm/css/xterm.css";
 
-import { Command, Maximize2, MessageSquare, Minimize2, X } from "lucide-react";
+import { Command, Maximize2, MessageSquare, Minimize2, RotateCw, X } from "lucide-react";
 import type { MutableRefObject, ReactElement } from "react";
 import { useMemo } from "react";
 
@@ -35,6 +35,9 @@ export interface AgentTerminalPanelProps {
 	isMoveToTrashLoading?: boolean;
 	onCancelAutomaticAction?: () => void;
 	cancelAutomaticActionLabel?: string | null;
+	/** Relaunches the CLI and resumes its last conversation, e.g. to reconnect MCP servers. */
+	onRestartSession?: () => void;
+	isRestartSessionLoading?: boolean;
 	showMoveToTrash?: boolean;
 	showSessionToolbar?: boolean;
 	onClose?: () => void;
@@ -155,6 +158,8 @@ function AgentTerminalPanelLayout({
 	isMoveToTrashLoading = false,
 	onCancelAutomaticAction,
 	cancelAutomaticActionLabel,
+	onRestartSession,
+	isRestartSessionLoading = false,
 	showMoveToTrash,
 	showSessionToolbar = true,
 	onClose,
@@ -314,24 +319,41 @@ function AgentTerminalPanelLayout({
 					{lastError}
 				</div>
 			) : null}
-			{showMoveToTrash && onMoveToTrash ? (
+			{(showMoveToTrash && onMoveToTrash) || onRestartSession ? (
 				<div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 12px" }}>
-					<AgentTerminalReviewActions
-						taskId={taskId}
-						taskColumnId={taskColumnId}
-						onCommit={onCommit}
-						onOpenPr={onOpenPr}
-						isCommitLoading={isCommitLoading}
-						isOpenPrLoading={isOpenPrLoading}
-					/>
+					{showMoveToTrash && onMoveToTrash ? (
+						<AgentTerminalReviewActions
+							taskId={taskId}
+							taskColumnId={taskColumnId}
+							onCommit={onCommit}
+							onOpenPr={onOpenPr}
+							isCommitLoading={isCommitLoading}
+							isOpenPrLoading={isOpenPrLoading}
+						/>
+					) : null}
 					{cancelAutomaticActionLabel && onCancelAutomaticAction ? (
 						<Button variant="default" fill onClick={onCancelAutomaticAction}>
 							{cancelAutomaticActionLabel}
 						</Button>
 					) : null}
-					<Button variant="danger" fill disabled={isMoveToTrashLoading} onClick={onMoveToTrash}>
-						{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
-					</Button>
+					{onRestartSession ? (
+						<Tooltip side="top" content="Restart the CLI and resume this conversation, reloading MCP servers">
+							<Button
+								variant="default"
+								fill
+								icon={isRestartSessionLoading ? <Spinner size={14} /> : <RotateCw size={14} />}
+								disabled={isRestartSessionLoading || isStopping}
+								onClick={onRestartSession}
+							>
+								Restart session
+							</Button>
+						</Tooltip>
+					) : null}
+					{showMoveToTrash && onMoveToTrash ? (
+						<Button variant="danger" fill disabled={isMoveToTrashLoading} onClick={onMoveToTrash}>
+							{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
+						</Button>
+					) : null}
 				</div>
 			) : null}
 		</div>

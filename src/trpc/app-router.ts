@@ -218,6 +218,10 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeTaskSessionStartRequest,
 		) => Promise<RuntimeTaskSessionStartResponse>;
+		restartTaskSession: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: RuntimeTaskSessionStartRequest,
+		) => Promise<RuntimeTaskSessionStartResponse>;
 		stopTaskSession: (
 			scope: RuntimeTrpcWorkspaceScope,
 			input: RuntimeTaskSessionStopRequest,
@@ -460,6 +464,12 @@ export const runtimeAppRouter = t.router({
 			.output(runtimeTaskSessionStartResponseSchema)
 			.mutation(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.startTaskSession(ctx.workspaceScope, input);
+			}),
+		restartTaskSession: workspaceProcedure
+			.input(runtimeTaskSessionStartRequestSchema)
+			.output(runtimeTaskSessionStartResponseSchema)
+			.mutation(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.restartTaskSession(ctx.workspaceScope, input);
 			}),
 		stopTaskSession: workspaceProcedure
 			.input(runtimeTaskSessionStopRequestSchema)

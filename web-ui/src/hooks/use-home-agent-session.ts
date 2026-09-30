@@ -62,6 +62,8 @@ function buildTerminalDescriptor(config: RuntimeConfigResponse): string {
 	return JSON.stringify({
 		agentId: config.selectedAgentId,
 		command: config.effectiveCommand ?? "",
+		// A new sidebar profile only applies at launch, so changing it rotates the session.
+		sidebarLaunchProfileId: config.launchProfiles?.find((profile) => profile.sidebarAgent)?.id ?? null,
 	});
 }
 

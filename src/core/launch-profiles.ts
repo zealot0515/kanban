@@ -63,6 +63,8 @@ export const launchProfileSummarySchema = z.object({
 	codexProvider: codexLaunchProviderSchema.optional(),
 	cliArgs: cliArgumentsSchema,
 	cliArgsInput: cliArgumentsInputSchema.optional(),
+	/** When true, the Kanban sidebar agent launches with this profile. At most one profile sets it. */
+	sidebarAgent: z.boolean().optional(),
 	variables: z.array(launchProfileSummaryVariableSchema).max(100),
 });
 
@@ -86,6 +88,7 @@ export const launchProfileSaveSchema = z.object({
 	codexProvider: codexLaunchProviderSchema.optional(),
 	cliArgs: cliArgumentsSchema,
 	cliArgsInput: cliArgumentsInputSchema.optional(),
+	sidebarAgent: z.boolean().optional(),
 	variables: z.array(launchProfileSaveVariableSchema).max(100),
 });
 
@@ -96,6 +99,7 @@ export const storedLaunchProfileSchema = z.object({
 	codexProvider: codexLaunchProviderSchema.optional(),
 	cliArgs: cliArgumentsSchema,
 	cliArgsInput: cliArgumentsInputSchema.optional(),
+	sidebarAgent: z.boolean().optional(),
 	variables: z.array(launchProfileVariableSchema).max(100),
 });
 
@@ -115,6 +119,7 @@ export function summarizeLaunchProfile(profile: StoredLaunchProfile): LaunchProf
 		...(profile.codexProvider ? { codexProvider: { ...profile.codexProvider } } : {}),
 		cliArgs: [...profile.cliArgs],
 		...(profile.cliArgsInput ? { cliArgsInput: { ...profile.cliArgsInput } } : {}),
+		...(profile.sidebarAgent ? { sidebarAgent: true } : {}),
 		variables: profile.variables.map(({ name }) => ({ name, configured: true })),
 	};
 }

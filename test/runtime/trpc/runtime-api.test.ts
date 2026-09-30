@@ -8,10 +8,12 @@ import type { StoredLaunchProfile } from "../../../src/core/launch-profiles";
 
 const launchProfileMocks = vi.hoisted(() => ({
 	resolveLaunchProfile: vi.fn<(id: string | undefined) => Promise<StoredLaunchProfile | null>>(),
+	resolveSidebarLaunchProfile: vi.fn<(agentId: string) => Promise<StoredLaunchProfile | null>>(),
 }));
 
 vi.mock("../../../src/config/launch-profiles", () => ({
 	resolveLaunchProfile: launchProfileMocks.resolveLaunchProfile,
+	resolveSidebarLaunchProfile: launchProfileMocks.resolveSidebarLaunchProfile,
 	loadLaunchProfileSummaries: vi.fn(async () => []),
 	saveLaunchProfiles: vi.fn(async () => []),
 }));
@@ -268,6 +270,7 @@ describe("createRuntimeApi startTaskSession", () => {
 
 	beforeEach(() => {
 		launchProfileMocks.resolveLaunchProfile.mockReset().mockResolvedValue(null);
+		launchProfileMocks.resolveSidebarLaunchProfile.mockReset().mockResolvedValue(null);
 		mcpSettingsPath = `/tmp/kanban-mcp-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
 		mcpOauthSettingsPath = `/tmp/kanban-mcp-oauth-settings-${Date.now()}-${Math.random().toString(16).slice(2)}.json`;
 		process.env.CLINE_MCP_SETTINGS_PATH = mcpSettingsPath;
@@ -895,6 +898,61 @@ describe("createRuntimeApi startTaskSession", () => {
 		expect(turnCheckpointMocks.captureTaskTurnCheckpoint).not.toHaveBeenCalled();
 	});
 
+	it("restarts a running CLI task by waiting for exit, then resuming without the kickoff prompt", async () => {
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
+			agentId: "codex",
+			label: "OpenAI Codex",
+			command: "codex",
+			binary: "codex",
+			args: [],
+		});
+		const calls: string[] = [];
+		const terminalManager = {
+			getSummary: vi.fn(() => createSummary({ agentId: "codex", state: "running" })),
+			stopTaskSessionAndWait: vi.fn(async () => {
+				calls.push("stop");
+			}),
+			startTaskSession: vi.fn(async () => {
+				calls.push("start");
+				return createSummary({ agentId: "codex" });
+			}),
+			applyTurnCheckpoint: vi.fn(),
+		};
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.restartTaskSession(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{
+				taskId: "task-1",
+				baseRef: "main",
+				prompt: "Original kickoff prompt",
+				startInPlanMode: true,
+			},
+		);
+
+		expect(response.ok).toBe(true);
+		expect(calls).toEqual(["stop", "start"]);
+		expect(terminalManager.stopTaskSessionAndWait).toHaveBeenCalledWith("task-1");
+		expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "task-1",
+				agentId: "codex",
+				prompt: "",
+				startInPlanMode: false,
+				resumeFromTrash: true,
+			}),
+		);
+	});
+
 	it("clears task chat cache before resumeFromTrash starts", async () => {
 		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/existing-worktree");
 		agentRegistryMocks.resolveAgentCommand.mockReturnValue({
@@ -1204,6 +1262,71 @@ describe("createRuntimeApi startTaskSession", () => {
 			}),
 		);
 		expect(turnCheckpointMocks.captureTaskTurnCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("applies the sidebar launch profile to home agent sessions", async () => {
+		const homeTaskId = "__home_agent__:workspace-1:codex";
+		launchProfileMocks.resolveSidebarLaunchProfile.mockResolvedValue({
+			id: "sidebar",
+			name: "Sidebar proxy",
+			agentId: null,
+			cliArgs: [],
+			sidebarAgent: true,
+			codexProvider: { id: "cliproxy", baseUrl: "http://127.0.0.1:8317/v1", apiKeyEnv: "OPENAI_API_KEY" },
+			variables: [{ name: "OPENAI_API_KEY", value: "sidebar-key" }],
+		});
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({ agentId: "codex", binary: "codex", args: [] });
+		const terminalManager = {
+			startTaskSession: vi.fn(async () => createSummary({ taskId: homeTaskId })),
+			applyTurnCheckpoint: vi.fn(),
+		};
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		const response = await api.startTaskSession(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ taskId: homeTaskId, baseRef: "main", prompt: "" },
+		);
+
+		expect(response.ok).toBe(true);
+		expect(launchProfileMocks.resolveSidebarLaunchProfile).toHaveBeenCalledWith("codex");
+		expect(launchProfileMocks.resolveLaunchProfile).not.toHaveBeenCalled();
+		expect(terminalManager.startTaskSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: homeTaskId,
+				env: { OPENAI_API_KEY: "sidebar-key" },
+				args: expect.arrayContaining(['model_provider="cliproxy"']),
+			}),
+		);
+	});
+
+	it("does not apply the sidebar launch profile to task cards", async () => {
+		agentRegistryMocks.resolveAgentCommand.mockReturnValue({ agentId: "codex", binary: "codex", args: [] });
+		taskWorktreeMocks.resolveTaskCwd.mockResolvedValue("/tmp/worktree");
+		const terminalManager = { startTaskSession: vi.fn(async () => createSummary()), applyTurnCheckpoint: vi.fn() };
+		const api = createTestRuntimeApi({
+			getActiveWorkspaceId: vi.fn(() => "workspace-1"),
+			loadScopedRuntimeConfig: vi.fn(async () => createRuntimeConfigState()),
+			setActiveRuntimeConfig: vi.fn(),
+			getScopedTerminalManager: vi.fn(async () => terminalManager as never),
+			getScopedClineTaskSessionService: vi.fn(async () => createClineTaskSessionServiceMock() as never),
+			resolveInteractiveShellCommand: vi.fn(),
+			runCommand: vi.fn(),
+		});
+
+		await api.startTaskSession(
+			{ workspaceId: "workspace-1", workspacePath: "/tmp/repo" },
+			{ taskId: "task-1", agentId: "codex", baseRef: "main", prompt: "Hi" },
+		);
+
+		expect(launchProfileMocks.resolveSidebarLaunchProfile).not.toHaveBeenCalled();
 	});
 
 	it("forwards task images to CLI task sessions", async () => {

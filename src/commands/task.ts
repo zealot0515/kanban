@@ -23,6 +23,7 @@ import {
 	trashTaskAndGetReadyLinkedTaskIds,
 	updateTask,
 } from "../core/task-board-mutations";
+import type { TaskOverrides } from "../core/task-overrides";
 import { resolveProjectInputPath } from "../projects/project-path";
 import { loadWorkspaceContext, mutateWorkspaceState } from "../state/workspace-state";
 import type { RuntimeAppRouter } from "../trpc/app-router";
@@ -483,10 +484,12 @@ async function createTask(input: {
 	autoReviewMode?: "commit" | "pr";
 	agentId?: RuntimeAgentId;
 	clineSettings?: RuntimeTaskClineSettings;
+	launchProfile?: LaunchProfileSelection;
 }): Promise<JsonRecord> {
 	const workspaceRepoPath = await resolveWorkspaceRepoPath(input.projectPath, input.cwd);
 	const workspaceId = await ensureRuntimeWorkspace(workspaceRepoPath);
 	const runtimeClient = createRuntimeTrpcClient(workspaceId);
+	const launchProfileId = await resolveLaunchProfileId(runtimeClient, input.launchProfile, input.agentId);
 	const created = await updateRuntimeWorkspaceState(runtimeClient, workspaceRepoPath, (state) => {
 		const resolvedBaseRef = (input.baseRef ?? "").trim() || resolveTaskBaseRef(state);
 		if (!resolvedBaseRef) {
@@ -503,6 +506,7 @@ async function createTask(input: {
 				autoReviewMode: input.autoReviewMode,
 				agentId: input.agentId,
 				clineSettings: input.clineSettings,
+				taskOverrides: applyLaunchProfileId(undefined, launchProfileId),
 				baseRef: resolvedBaseRef,
 			},
 			() => globalThis.crypto.randomUUID(),
@@ -526,9 +530,68 @@ async function createTask(input: {
 			autoReviewEnabled: created.autoReviewEnabled === true,
 			autoReviewMode: created.autoReviewMode ?? "commit",
 			...(created.agentId ? { agentId: created.agentId } : {}),
+			...(created.taskOverrides?.launchProfileId ? { launchProfileId: created.taskOverrides.launchProfileId } : {}),
 			...formatTaskClineSettings(created.clineSettings),
 		},
 	};
+}
+
+type LaunchProfileSelection = { kind: "set"; value: string } | { kind: "clear" };
+
+function parseLaunchProfileOption(value: string | undefined): LaunchProfileSelection | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	const normalized = value.trim();
+	if (!normalized) {
+		throw new Error("--launch-profile requires a profile name or ID.");
+	}
+	return normalized.toLowerCase() === "none" ? { kind: "clear" } : { kind: "set", value: normalized };
+}
+
+/** Resolves a launch profile by ID or case-insensitive name through the runtime, which owns decryption. */
+async function resolveLaunchProfileId(
+	runtimeClient: ReturnType<typeof createRuntimeTrpcClient>,
+	selection: LaunchProfileSelection | undefined,
+	agentId: RuntimeAgentId | null | undefined,
+): Promise<string | null | undefined> {
+	if (selection === undefined) {
+		return undefined;
+	}
+	if (selection.kind === "clear") {
+		return null;
+	}
+	const profiles = (await runtimeClient.runtime.getConfig.query()).launchProfiles ?? [];
+	const byId = profiles.find((profile) => profile.id === selection.value);
+	const byName = profiles.filter((profile) => profile.name.toLowerCase() === selection.value.toLowerCase());
+	if (!byId && byName.length > 1) {
+		throw new Error(`Several launch profiles are named "${selection.value}". Use the profile ID instead.`);
+	}
+	const profile = byId ?? byName[0];
+	if (!profile) {
+		const available = profiles.map((candidate) => `${candidate.name} (${candidate.id})`).join(", ");
+		throw new Error(
+			`Launch profile "${selection.value}" was not found.${available ? ` Available: ${available}.` : " Add one in Settings → Launch profiles."}`,
+		);
+	}
+	if (agentId === "cline") {
+		throw new Error("Launch profiles apply to CLI agents such as Codex and Claude, not the native Cline agent.");
+	}
+	if (profile.agentId && agentId && profile.agentId !== agentId) {
+		throw new Error(`Launch profile "${profile.name}" is configured for ${profile.agentId}, not ${agentId}.`);
+	}
+	return profile.id;
+}
+
+function applyLaunchProfileId(
+	overrides: TaskOverrides | undefined,
+	launchProfileId: string | null | undefined,
+): TaskOverrides | undefined {
+	if (launchProfileId === undefined) {
+		return overrides;
+	}
+	const { launchProfileId: _previous, ...rest } = overrides ?? {};
+	return launchProfileId === null ? rest : { ...rest, launchProfileId };
 }
 
 async function updateTaskCommand(input: {
@@ -545,6 +608,7 @@ async function updateTaskCommand(input: {
 	clineProviderId?: string | null;
 	clineModelId?: string | null;
 	clineReasoningEffort?: ParsedTaskClineReasoningEffort;
+	launchProfile?: LaunchProfileSelection;
 }): Promise<JsonRecord> {
 	if (
 		input.title === undefined &&
@@ -556,7 +620,8 @@ async function updateTaskCommand(input: {
 		input.agentId === undefined &&
 		input.clineProviderId === undefined &&
 		input.clineModelId === undefined &&
-		input.clineReasoningEffort === undefined
+		input.clineReasoningEffort === undefined &&
+		input.launchProfile === undefined
 	) {
 		throw new Error("task update requires at least one field to change.");
 	}
@@ -564,6 +629,15 @@ async function updateTaskCommand(input: {
 	const workspaceRepoPath = await resolveWorkspaceRepoPath(input.projectPath, input.cwd);
 	const workspaceId = await ensureRuntimeWorkspace(workspaceRepoPath);
 	const runtimeClient = createRuntimeTrpcClient(workspaceId);
+	const currentTaskRecord =
+		input.launchProfile === undefined
+			? null
+			: findTaskRecord(await runtimeClient.workspace.getState.query(), input.taskId);
+	const launchProfileId = await resolveLaunchProfileId(
+		runtimeClient,
+		input.launchProfile,
+		input.agentId === undefined ? currentTaskRecord?.task.agentId : input.agentId,
+	);
 	const updated = await updateRuntimeWorkspaceState(runtimeClient, workspaceRepoPath, (runtimeState) => {
 		const taskRecord = findTaskRecord(runtimeState, input.taskId);
 		if (!taskRecord) {
@@ -584,6 +658,7 @@ async function updateTaskCommand(input: {
 			autoReviewMode: input.autoReviewMode ?? taskRecord.task.autoReviewMode ?? "commit",
 			agentId: input.agentId,
 			clineSettings: nextTaskClineSettings,
+			taskOverrides: applyLaunchProfileId(taskRecord.task.taskOverrides, launchProfileId),
 		});
 		if (!updatedTask.updated || !updatedTask.task) {
 			throw new Error(`Task "${input.taskId}" could not be updated.`);
@@ -1139,6 +1214,10 @@ export function registerTaskCommand(program: Command): void {
 			"--cline-reasoning-effort <level>",
 			"Cline reasoning effort override: default | low | medium | high | xhigh.",
 		)
+		.option(
+			"--launch-profile <name-or-id>",
+			'Saved launch profile (Settings → Launch profiles) for CLI agents. Use "none" to clear.',
+		)
 		.action(
 			async (options: {
 				title?: string;
@@ -1152,6 +1231,7 @@ export function registerTaskCommand(program: Command): void {
 				clineProvider?: string;
 				clineModel?: string;
 				clineReasoningEffort?: string;
+				launchProfile?: string;
 			}) => {
 				await runTaskCommand(
 					async () =>
@@ -1170,6 +1250,7 @@ export function registerTaskCommand(program: Command): void {
 								modelId: parseOptionalStringOrDefault(options.clineModel) ?? undefined,
 								reasoningEffort: parseTaskClineReasoningEffort(options.clineReasoningEffort),
 							}),
+							launchProfile: parseLaunchProfileOption(options.launchProfile),
 						}),
 				);
 			},
@@ -1199,6 +1280,10 @@ export function registerTaskCommand(program: Command): void {
 			"--cline-reasoning-effort <level>",
 			'Cline reasoning effort override: default | low | medium | high | xhigh. Use "inherit" to clear.',
 		)
+		.option(
+			"--launch-profile <name-or-id>",
+			'Saved launch profile (Settings → Launch profiles) for CLI agents. Use "none" to clear.',
+		)
 		.action(
 			async (options: {
 				taskId: string;
@@ -1213,6 +1298,7 @@ export function registerTaskCommand(program: Command): void {
 				clineProvider?: string;
 				clineModel?: string;
 				clineReasoningEffort?: string;
+				launchProfile?: string;
 			}) => {
 				await runTaskCommand(
 					async () =>
@@ -1230,6 +1316,7 @@ export function registerTaskCommand(program: Command): void {
 							clineProviderId: parseOptionalStringOrDefault(options.clineProvider),
 							clineModelId: parseOptionalStringOrDefault(options.clineModel),
 							clineReasoningEffort: parseTaskClineReasoningEffort(options.clineReasoningEffort),
+							launchProfile: parseLaunchProfileOption(options.launchProfile),
 						}),
 				);
 			},

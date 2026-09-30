@@ -12,7 +12,12 @@ import { createClineMcpSettingsService } from "../cline-sdk/cline-mcp-settings-s
 import { createClineProviderService } from "../cline-sdk/cline-provider-service";
 import { isClineClearSlashCommand } from "../cline-sdk/cline-slash-commands";
 import type { ClineTaskSessionService } from "../cline-sdk/cline-task-session-service";
-import { loadLaunchProfileSummaries, resolveLaunchProfile, saveLaunchProfiles } from "../config/launch-profiles";
+import {
+	loadLaunchProfileSummaries,
+	resolveLaunchProfile,
+	resolveSidebarLaunchProfile,
+	saveLaunchProfiles,
+} from "../config/launch-profiles";
 import type { RuntimeConfigState } from "../config/runtime-config";
 import { updateGlobalRuntimeConfig, updateRuntimeConfig } from "../config/runtime-config";
 import type {
@@ -114,7 +119,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			await loadLaunchProfileSummaries(),
 		);
 
-	return {
+	const runtimeApi: RuntimeTrpcContext["runtimeApi"] = {
 		loadConfig: async (workspaceScope) => {
 			const activeRuntimeConfig = deps.getActiveRuntimeConfig?.();
 			if (!workspaceScope && !activeRuntimeConfig) {
@@ -287,7 +292,11 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						error: "No runnable agent command is configured. Open Settings, install a supported CLI, and select it.",
 					};
 				}
-				const launchProfile = await resolveLaunchProfile(body.taskOverrides?.launchProfileId);
+				// The sidebar agent has no task card, so it uses the profile flagged for it in Settings.
+				const launchProfile =
+					isHomeAgentSessionId(body.taskId) && !body.taskOverrides?.launchProfileId
+						? await resolveSidebarLaunchProfile(resolved.agentId)
+						: await resolveLaunchProfile(body.taskOverrides?.launchProfileId);
 				if (body.taskOverrides?.launchProfileId && !launchProfile) {
 					throw new Error(`Launch profile "${body.taskOverrides.launchProfileId}" was not found.`);
 				}
@@ -334,6 +343,35 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 					ok: true,
 					summary: nextSummary,
 				};
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					ok: false,
+					summary: null,
+					error: message,
+				};
+			}
+		},
+		restartTaskSession: async (workspaceScope, input) => {
+			try {
+				const body = parseTaskSessionStartRequest(input);
+				if (isHomeAgentSessionId(body.taskId)) {
+					throw new Error("Only task sessions can be restarted.");
+				}
+				const terminalManager = await deps.getScopedTerminalManager(workspaceScope);
+				if (terminalManager.getSummary(body.taskId)?.agentId === "cline") {
+					throw new Error("Restart session is only available for CLI agents such as Codex and Claude.");
+				}
+				// Relaunch through the resume path (codex resume --last, claude --continue)
+				// so the CLI reloads MCP servers and config while keeping the conversation.
+				await terminalManager.stopTaskSessionAndWait(body.taskId);
+				return await runtimeApi.startTaskSession(workspaceScope, {
+					...body,
+					prompt: "",
+					images: undefined,
+					startInPlanMode: false,
+					resumeFromTrash: true,
+				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
@@ -756,4 +794,5 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			return await deps.runUpdateNow();
 		},
 	};
+	return runtimeApi;
 }

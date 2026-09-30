@@ -81,6 +81,13 @@
     "test/runtime/api-validation.test.ts",
     "test/runtime/hooks-codex-native.test.ts",
     "test/runtime/hooks-codex-rollout-fallback.test.ts",
-    "test/runtime/trpc/hooks-api.test.ts"
+    "test/runtime/trpc/hooks-api.test.ts",
+    "src/prompts/append-system-prompt.ts",
+    "src/terminal/terminal-state-mirror.ts",
+    "src/trpc/app-router.ts",
+    "test/runtime/terminal/terminal-state-mirror.test.ts",
+    "web-ui/src/components/detail-panels/agent-terminal-panel.tsx",
+    "web-ui/src/hooks/use-home-agent-session.ts",
+    "web-ui/src/hooks/use-task-session-restart.ts"
   ]
 }

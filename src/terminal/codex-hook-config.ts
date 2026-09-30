@@ -5,6 +5,9 @@ import { buildKanbanCommandParts } from "../core/kanban-command";
 import { quoteShellArg } from "../core/shell";
 
 const CODEX_HOOK_TIMEOUT_SECONDS = 5;
+// Codex clamps Interrupt (and SessionEnd) hook timeouts to 3s before hashing the
+// trust identity, so a larger value here would make Codex ask to review the hook.
+const CODEX_INTERRUPT_HOOK_TIMEOUT_SECONDS = 3;
 
 type CodexHookConfigEvent =
 	| "Interrupt"
@@ -25,6 +28,7 @@ interface CodexHookConfig {
 	eventName: CodexHookConfigEvent;
 	matcher?: string;
 	command: string;
+	timeoutSeconds?: number;
 }
 
 interface CodexHookTrustEntry {
@@ -68,10 +72,14 @@ function buildCodexHookCommand(event: RuntimeHookEvent): string {
 		.join(" ");
 }
 
-function buildCodexHookConfigValue(command: string, matcher?: string): string {
-	const matcherConfig = matcher ? `matcher=${JSON.stringify(matcher)},` : "";
-	const commandConfig = JSON.stringify(command);
-	return `[{${matcherConfig}hooks=[{type="command",command=${commandConfig},timeout=${CODEX_HOOK_TIMEOUT_SECONDS}}]}]`;
+function codexHookTimeoutSeconds(config: CodexHookConfig): number {
+	return config.timeoutSeconds ?? CODEX_HOOK_TIMEOUT_SECONDS;
+}
+
+function buildCodexHookConfigValue(config: CodexHookConfig): string {
+	const matcherConfig = config.matcher ? `matcher=${JSON.stringify(config.matcher)},` : "";
+	const commandConfig = JSON.stringify(config.command);
+	return `[{${matcherConfig}hooks=[{type="command",command=${commandConfig},timeout=${codexHookTimeoutSeconds(config)}}]}]`;
 }
 
 function codexSessionFlagsConfigSource(): string {
@@ -120,7 +128,7 @@ function buildCodexHookTrustEntry(config: CodexHookConfig): CodexHookTrustEntry 
 	const handler: JsonObject = {
 		async: false,
 		command: config.command,
-		timeout: CODEX_HOOK_TIMEOUT_SECONDS,
+		timeout: codexHookTimeoutSeconds(config),
 		type: "command",
 	};
 	const group: JsonObject = {
@@ -159,6 +167,7 @@ export function configureCodexHooks(args: string[]): void {
 	const interruptHook: CodexHookConfig = {
 		eventName: "Interrupt",
 		command: buildCodexHookCommand("to_review"),
+		timeoutSeconds: CODEX_INTERRUPT_HOOK_TIMEOUT_SECONDS,
 	};
 	const permissionRequestHook: CodexHookConfig = {
 		eventName: "PermissionRequest",
@@ -188,26 +197,18 @@ export function configureCodexHooks(args: string[]): void {
 
 	addCodexConfigOverrideBeforeSubcommand(args, "features.hooks", "true");
 	addCodexConfigOverrideBeforeSubcommand(args, "hooks.state", trustStateConfigValue);
-	addCodexConfigOverrideBeforeSubcommand(
-		args,
-		"hooks.UserPromptSubmit",
-		buildCodexHookConfigValue(inProgressHook.command),
-	);
-	addCodexConfigOverrideBeforeSubcommand(args, "hooks.Stop", buildCodexHookConfigValue(reviewHook.command));
-	addCodexConfigOverrideBeforeSubcommand(args, "hooks.Interrupt", buildCodexHookConfigValue(interruptHook.command));
+	addCodexConfigOverrideBeforeSubcommand(args, "hooks.UserPromptSubmit", buildCodexHookConfigValue(inProgressHook));
+	addCodexConfigOverrideBeforeSubcommand(args, "hooks.Stop", buildCodexHookConfigValue(reviewHook));
+	addCodexConfigOverrideBeforeSubcommand(args, "hooks.Interrupt", buildCodexHookConfigValue(interruptHook));
 	addCodexConfigOverrideBeforeSubcommand(
 		args,
 		"hooks.PermissionRequest",
-		buildCodexHookConfigValue(permissionRequestHook.command, permissionRequestHook.matcher),
+		buildCodexHookConfigValue(permissionRequestHook),
 	);
-	addCodexConfigOverrideBeforeSubcommand(
-		args,
-		"hooks.PreToolUse",
-		buildCodexHookConfigValue(preToolUseActivityHook.command, preToolUseActivityHook.matcher),
-	);
+	addCodexConfigOverrideBeforeSubcommand(args, "hooks.PreToolUse", buildCodexHookConfigValue(preToolUseActivityHook));
 	addCodexConfigOverrideBeforeSubcommand(
 		args,
 		"hooks.PostToolUse",
-		buildCodexHookConfigValue(postToolUseActivityHook.command, postToolUseActivityHook.matcher),
+		buildCodexHookConfigValue(postToolUseActivityHook),
 	);
 }

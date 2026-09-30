@@ -20,6 +20,12 @@
 - 卡片模型優先顯示執行階段回報（Codex `turn_context`、Claude 主 session 的 assistant transcript），其次顯示啟動時指定的模型。CLI 尚未回報預設模型時顯示 `CLI default (not reported)`。更換 CLI 內模型後，下一次相關記錄／hook 回報會更新；顯示不保證涵蓋 CLI 自己啟動的子代理模型。
 - Codex 狀態依主對話的原生 hook 更新：輸入新指示／執行工具回到 In Progress；完成回覆、等待手動核准／回答問題或中斷後進入 Review。依當前 turn 的 `approvals_reviewer` 區分自動審核，審核與執行長命令期間維持 In Progress。空白 Enter 或 `/model` 的閒置畫面重繪不會被當成執行新任務；只有待手動核准時，才保留 Enter 後恢復執行的偵測。完成訊息只讀取對應主 session／turn，排除 guardian 等內部代理，避免卡片出現 `risk_level` JSON。更新 desktop 後需完全退出舊 App，再以新版啟動／恢復 CLI session，才能套用新的 hooks。
 
+- Launch profile 可開啟 **Use for the sidebar agent**（同時只能一個）。Kanban 側邊欄 agent 啟動時會套用該 profile 的環境變數與 CLI 參數；儲存後側邊欄 agent 會自動重啟。profile 指定的 Agent 與側邊欄 agent 不同時不套用。
+- `kanban task create` / `kanban task update` 支援 `--launch-profile "<名稱或 ID>"`（名稱不分大小寫；`update` 用 `none` 清除）。找不到時會列出可用 profile。側邊欄 agent 的系統提示也會說明這個參數，所以可以直接請它「用 xxx profile 建立 task」。
+- 進入 In Progress／Review 的 Codex／Claude task 頁面有 **Restart session** 按鈕：停止 CLI、等它結束後以 `codex resume --last`／`claude --continue` 重新啟動，保留原本對話，並重新載入 MCP 與 profile／task 設定；不會重送原始 prompt。
+- Codex 的 Interrupt hook 使用 3 秒 timeout（Codex 對此事件的上限），讓預先信任的 hash 與 Codex 計算的一致，不再每次啟動都跳出 **Hooks need review**。
+- 重新開啟 task 終端時會一併還原 SGR 滑鼠編碼，避免滑鼠移動時在 Codex 輸入框出現亂碼英文字。
+
 ### 設定 Codex 使用 CLIProxy
 
 1. 在 **Settings → Launch profiles** 編輯既有 profile，Agent 選 **OpenAI Codex**（或 All agents）。

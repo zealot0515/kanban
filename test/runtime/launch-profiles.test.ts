@@ -42,6 +42,11 @@ describe("launch profile encryption", () => {
 		expect(JSON.stringify(summary)).not.toContain("secret-value");
 	});
 
+	it("keeps the sidebar agent flag in summaries only when set", () => {
+		expect(summarizeLaunchProfile({ ...profiles[0], sidebarAgent: true }).sidebarAgent).toBe(true);
+		expect(summarizeLaunchProfile(profiles[0])).not.toHaveProperty("sidebarAgent");
+	});
+
 	it("keeps older profiles without provider settings valid", () => {
 		const { codexProvider: _provider, cliArgsInput: _input, ...legacy } = profiles[0];
 		expect(launchProfileSaveSchema.parse(legacy)).toEqual(legacy);
