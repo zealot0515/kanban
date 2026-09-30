@@ -60,7 +60,10 @@ source_revision="$(git rev-parse --short=12 HEAD)"
 dirty_suffix=""
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then dirty_suffix='.dirty'; fi
 base_version="$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version')"
-export KANBAN_RELEASE_VERSION="${base_version}-custom.${source_revision}${dirty_suffix}"
+# Local build time (to the second) keeps same-commit builds distinct. Date and time
+# form one hyphenated identifier: semver forbids leading zeros in numeric ones.
+build_timestamp="$(date +%Y%m%d-%H%M%S)"
+export KANBAN_RELEASE_VERSION="${base_version}-custom.${build_timestamp}.${source_revision}${dirty_suffix}"
 
 # Local releases neither upload source maps nor use signing credentials.
 export SENTRY_AUTH_TOKEN=''

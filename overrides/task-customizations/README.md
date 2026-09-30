@@ -85,7 +85,7 @@ KANBAN_NO_AUTO_UPDATE=1 node dist/cli.js --skip-shutdown-cleanup
 ./overrides/task-customizations/build-release.sh --skip-install
 ```
 
-腳本可從任意目錄執行，會以這份 checkout **當下的程式碼（包含未 commit 修改）**重新建置 runtime、web UI 和 Electron shell。預設使用三份 lockfile 安裝依賴、執行三部分 typecheck 與桌面測試；版本帶有 Git commit，工作目錄有變更時加 `.dirty`。首次執行需要網路下載依賴與 Electron。
+腳本可從任意目錄執行，會以這份 checkout **當下的程式碼（包含未 commit 修改）**重新建置 runtime、web UI 和 Electron shell。預設使用三份 lockfile 安裝依賴、執行三部分 typecheck 與桌面測試；版本帶有建置日期時間（到秒）與 Git commit，例如 `0.1.70-custom.20260930-165230.44d8016abcde`，工作目錄有變更時加 `.dirty`。首次執行需要網路下載依賴與 Electron。
 
 輸出位於 `packages/desktop/out/custom/<版本>/`，包含 `Kanban-Custom-<版本>-arm64.dmg`／`-x64.dmg` 與 `SHA256SUMS`。腳本只建立本地檔案，不發布 GitHub Release、不啟動 Kanban、不 commit，也不改 package／lockfile。可在輸出目錄執行 `shasum -a 256 -c SHA256SUMS` 驗證。
 

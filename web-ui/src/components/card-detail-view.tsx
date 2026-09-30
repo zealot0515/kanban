@@ -701,7 +701,7 @@ export function CardDetailView({
 					: null
 			}
 			onRestartSession={
-				isTaskTerminalEnabled && sessionSummary?.agentId && onRestartTaskSession
+				isTaskTerminalEnabled && sessionSummary && onRestartTaskSession
 					? () => onRestartTaskSession(selection.card.id)
 					: undefined
 			}

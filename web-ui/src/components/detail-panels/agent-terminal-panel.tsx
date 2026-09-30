@@ -336,24 +336,31 @@ function AgentTerminalPanelLayout({
 							{cancelAutomaticActionLabel}
 						</Button>
 					) : null}
-					{onRestartSession ? (
-						<Tooltip side="top" content="Restart the CLI and resume this conversation, reloading MCP servers">
+					<div className="flex gap-2">
+						{onRestartSession ? (
+							<Tooltip side="top" content="Restart the CLI and resume this conversation, reloading MCP servers">
+								<Button
+									variant="default"
+									className="flex-1"
+									icon={isRestartSessionLoading ? <Spinner size={14} /> : <RotateCw size={14} />}
+									disabled={isRestartSessionLoading || isStopping}
+									onClick={onRestartSession}
+								>
+									Restart session
+								</Button>
+							</Tooltip>
+						) : null}
+						{showMoveToTrash && onMoveToTrash ? (
 							<Button
-								variant="default"
-								fill
-								icon={isRestartSessionLoading ? <Spinner size={14} /> : <RotateCw size={14} />}
-								disabled={isRestartSessionLoading || isStopping}
-								onClick={onRestartSession}
+								variant="danger"
+								className="flex-1"
+								disabled={isMoveToTrashLoading}
+								onClick={onMoveToTrash}
 							>
-								Restart session
+								{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
 							</Button>
-						</Tooltip>
-					) : null}
-					{showMoveToTrash && onMoveToTrash ? (
-						<Button variant="danger" fill disabled={isMoveToTrashLoading} onClick={onMoveToTrash}>
-							{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
-						</Button>
-					) : null}
+						) : null}
+					</div>
 				</div>
 			) : null}
 		</div>

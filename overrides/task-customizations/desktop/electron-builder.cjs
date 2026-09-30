@@ -10,7 +10,7 @@ const { load } = desktopRequire("js-yaml");
 // different launchers to bin/kanban. Read the base and replace that list.
 const upstream = load(readFileSync(path.join(desktopRoot, "electron-builder.yml"), "utf8"));
 const version = process.env.KANBAN_RELEASE_VERSION;
-if (!version || !/^[0-9]+\.[0-9]+\.[0-9]+-custom\.[a-f0-9]+(?:\.dirty)?$/.test(version)) {
+if (!version || !/^[0-9]+\.[0-9]+\.[0-9]+-custom\.[0-9]{8}-[0-9]{6}\.[a-f0-9]+(?:\.dirty)?$/.test(version)) {
 	throw new Error("Run overrides/task-customizations/build-release.sh to set the release version.");
 }
 

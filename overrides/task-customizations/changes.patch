@@ -2969,7 +2969,7 @@ index 0afd24e0e00f1288b5bf23bfe539bbb7914291cd..77297aa440028c062fb6baf5a1202907
  												if (column.id === "backlog") {
  													onEditTask?.(card);
 diff --git a/web-ui/src/components/card-detail-view.tsx b/web-ui/src/components/card-detail-view.tsx
-index b3b8be454c37d5764ba9437666d5fbd3c7d5793b..6c06086759cc131c860a5a1623e22ffa18f53861 100644
+index b3b8be454c37d5764ba9437666d5fbd3c7d5793b..7e66e94a7c4983852840a730bc1c9a9932e155ed 100644
 --- a/web-ui/src/components/card-detail-view.tsx
 +++ b/web-ui/src/components/card-detail-view.tsx
 @@ -326,7 +326,8 @@ export function CardDetailView({
@@ -3015,7 +3015,7 @@ index b3b8be454c37d5764ba9437666d5fbd3c7d5793b..6c06086759cc131c860a5a1623e22ffa
  					: null
  			}
 +			onRestartSession={
-+				isTaskTerminalEnabled && sessionSummary?.agentId && onRestartTaskSession
++				isTaskTerminalEnabled && sessionSummary && onRestartTaskSession
 +					? () => onRestartTaskSession(selection.card.id)
 +					: undefined
 +			}
@@ -3035,7 +3035,7 @@ index b3b8be454c37d5764ba9437666d5fbd3c7d5793b..6c06086759cc131c860a5a1623e22ffa
  							onOpenPrTask={onOpenPrTask}
  							onMoveToTrashTask={onMoveReviewCardToTrash}
 diff --git a/web-ui/src/components/detail-panels/agent-terminal-panel.tsx b/web-ui/src/components/detail-panels/agent-terminal-panel.tsx
-index 1f4a255c785e780207b004c01085b15f61d8ea1c..78a418324b0334492386e308cfe50f0f7c8ddced 100644
+index 1f4a255c785e780207b004c01085b15f61d8ea1c..c241ac8d54b03c8d0a9d5e9703bc8f78747f9e45 100644
 --- a/web-ui/src/components/detail-panels/agent-terminal-panel.tsx
 +++ b/web-ui/src/components/detail-panels/agent-terminal-panel.tsx
 @@ -1,6 +1,6 @@
@@ -3065,7 +3065,7 @@ index 1f4a255c785e780207b004c01085b15f61d8ea1c..78a418324b0334492386e308cfe50f0f
  	showMoveToTrash,
  	showSessionToolbar = true,
  	onClose,
-@@ -314,24 +319,41 @@ function AgentTerminalPanelLayout({
+@@ -314,24 +319,48 @@ function AgentTerminalPanelLayout({
  					{lastError}
  				</div>
  			) : null}
@@ -3098,24 +3098,31 @@ index 1f4a255c785e780207b004c01085b15f61d8ea1c..78a418324b0334492386e308cfe50f0f
 -					<Button variant="danger" fill disabled={isMoveToTrashLoading} onClick={onMoveToTrash}>
 -						{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
 -					</Button>
-+					{onRestartSession ? (
-+						<Tooltip side="top" content="Restart the CLI and resume this conversation, reloading MCP servers">
++					<div className="flex gap-2">
++						{onRestartSession ? (
++							<Tooltip side="top" content="Restart the CLI and resume this conversation, reloading MCP servers">
++								<Button
++									variant="default"
++									className="flex-1"
++									icon={isRestartSessionLoading ? <Spinner size={14} /> : <RotateCw size={14} />}
++									disabled={isRestartSessionLoading || isStopping}
++									onClick={onRestartSession}
++								>
++									Restart session
++								</Button>
++							</Tooltip>
++						) : null}
++						{showMoveToTrash && onMoveToTrash ? (
 +							<Button
-+								variant="default"
-+								fill
-+								icon={isRestartSessionLoading ? <Spinner size={14} /> : <RotateCw size={14} />}
-+								disabled={isRestartSessionLoading || isStopping}
-+								onClick={onRestartSession}
++								variant="danger"
++								className="flex-1"
++								disabled={isMoveToTrashLoading}
++								onClick={onMoveToTrash}
 +							>
-+								Restart session
++								{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
 +							</Button>
-+						</Tooltip>
-+					) : null}
-+					{showMoveToTrash && onMoveToTrash ? (
-+						<Button variant="danger" fill disabled={isMoveToTrashLoading} onClick={onMoveToTrash}>
-+							{isMoveToTrashLoading ? <Spinner size={14} /> : "Move Card To Done"}
-+						</Button>
-+					) : null}
++						) : null}
++					</div>
  				</div>
  			) : null}
  		</div>
